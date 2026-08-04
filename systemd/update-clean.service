@@ -1,0 +1,19 @@
+# Copyright (C) 2026 wbharris
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+[Unit]
+Description=AI blade / SuperPOD system update and cleanup (update-clean)
+Documentation=https://github.com/wbharris/ai_blade_ubuntu_update_clean
+After=network-online.target
+Wants=network-online.target
+# Prefer not racing heavy GPU jobs; operators may add Conflicts= or a drain unit
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/update-clean.sh
+Nice=10
+IOSchedulingClass=best-effort
+# Do not auto-reboot from the unit; use config REBOOT_IF_REQUIRED only after drain
+
+[Install]
+WantedBy=multi-user.target

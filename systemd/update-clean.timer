@@ -1,0 +1,13 @@
+# Copyright (C) 2026 wbharris
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+[Unit]
+Description=Weekly AI blade update and cleanup
+
+[Timer]
+OnCalendar=Sun *-*-* 04:00:00
+Persistent=true
+RandomizedDelaySec=30m
+
+[Install]
+WantedBy=timers.target

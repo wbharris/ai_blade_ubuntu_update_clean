@@ -1,0 +1,45 @@
+# Optional configuration for update-clean.sh (AI blade / SuperPOD)
+# Copyright (C) 2026 wbharris
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Copy to one of:
+#   /etc/update-clean.conf
+#   ~/.config/update-clean.conf
+#   ~/.update-clean.conf
+
+# Number of log files to retain (default: 3)
+# LOG_RETENTION=10
+
+# Kernels to keep in addition to the running kernel (default: 2, max 10)
+# KERNEL_KEEP=2
+
+# Optional path overrides
+# LOG_DIR=/var/log/update-clean
+# LOCKFILE=/run/update-clean.lock
+# LAST_RUN_DIR=/var/lib/update-clean
+
+# Backup /etc before purging residual configs (default: false)
+# BACKUP_MODE=true
+
+# Reboot automatically when /var/run/reboot-required is set (default: false)
+# Still blocked if GPU compute processes are running
+# REBOOT_IF_REQUIRED=false
+
+# Skip fwupd firmware updates (default: true on AI blades)
+# Prefer NVIDIA / Base Command Manager firmware workflows on SuperPOD
+# SKIP_FIRMWARE=true
+
+# Hold NVIDIA/CUDA/fabric/DCGM packages during cleanup (default: true)
+# HOLD_NVIDIA=true
+
+# Docker image prune: none | dangling | unused | all (default: dangling)
+# DOCKER_PRUNE=dangling
+
+# Optional completion email (requires mail command)
+# ADMIN_EMAIL=hpc-ops@example.com
+
+# Packages to hold during cleanup (default: base-files base-passwd bash coreutils util-linux)
+# CRITICAL_PACKAGES=(base-files base-passwd bash coreutils util-linux)
+
+# Use --no-kernel on the command line to skip kernel cleanup entirely.
+# /etc/update-clean.conf must be owned by root when installed system-wide.
