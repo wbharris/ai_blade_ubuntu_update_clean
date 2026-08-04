@@ -52,6 +52,9 @@
 # APT_LOCK_WAIT_SECS=60
 # APT_LOCK_POLL_SECS=5
 
+# Vendor GPU CLI hang protection (seconds)
+# GPU_CLI_TIMEOUT_SECS=10
+
 # Optional completion email (requires mail command)
 # ADMIN_EMAIL=ops@example.com
 

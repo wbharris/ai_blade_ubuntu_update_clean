@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented here.
 
+## [1.3.2] - 2026-08-04
+
+### Security / robustness (review follow-up)
+- Config files: `bash -n` syntax check + reject world-writable configs before `source`
+- `safe_mktemp` requires real `mktemp` success (no predictable `/tmp/name.$$` fallback)
+- Vendor GPU CLIs wrapped with `timeout` (`GPU_CLI_TIMEOUT_SECS`, default 10s)
+- Docker prune preview (dangling/total image counts) including dry-run estimates
+- Kernel skip paths log clearer reasons (low `/boot`, invalid delcount)
+- Kernel exclude regexes validated at startup via `ere_is_valid`
+
 ## [1.3.1] - 2026-08-04
 
 ### Fixed / hardened (review follow-up)

@@ -111,6 +111,8 @@ readonly BOOT_LOW_KB=${BOOT_LOW_KB:-51200}         # 50 MB — low /boot warning
 readonly APT_UPDATE_MAX_RETRIES=${APT_UPDATE_MAX_RETRIES:-3}
 readonly APT_LOCK_WAIT_SECS=${APT_LOCK_WAIT_SECS:-60}
 readonly APT_LOCK_POLL_SECS=${APT_LOCK_POLL_SECS:-5}
+# Max seconds for vendor GPU CLIs (prevent hangs on broken drivers)
+readonly GPU_CLI_TIMEOUT_SECS=${GPU_CLI_TIMEOUT_SECS:-10}
 # AI blades often store container images under /var — warn if low
 readonly VAR_LOW_KB=${VAR_LOW_KB:-10485760}        # 10 GB low /var warning
 
@@ -156,13 +158,30 @@ _record_failure() { EXIT_CODE=$((EXIT_CODE + 1)); }
 
 has_cmd() { command -v "$1" >/dev/null 2>&1; }
 
-# Create a private temp file. Prefer LOG_DIR (or TMPDIR), never bare predictable paths first.
+# Run command with optional timeout (prevents hung vendor GPU CLIs).
+# Usage: run_with_timeout SECS cmd [args...]
+run_with_timeout() {
+    local secs="${1:-10}"
+    shift
+    if has_cmd timeout && [[ "$secs" =~ ^[0-9]+$ ]] && [ "$secs" -gt 0 ]; then
+        timeout --signal=TERM --kill-after=2 "$secs" "$@"
+        return $?
+    fi
+    "$@"
+}
+
+# Create a private temp file via mktemp only (no predictable paths / symlink races).
+# Prefer LOG_DIR, then TMPDIR, then /tmp. Fails hard if mktemp cannot create a file.
 safe_mktemp() {
     local prefix="${1:-update-clean}"
     local dir candidate
+    local -a dirs=()
 
-    for dir in "${LOG_DIR:-}" "${TMPDIR:-}" /tmp; do
-        [ -n "$dir" ] || continue
+    [ -n "${LOG_DIR:-}" ] && dirs+=("$LOG_DIR")
+    [ -n "${TMPDIR:-}" ] && dirs+=("$TMPDIR")
+    dirs+=("/tmp")
+
+    for dir in "${dirs[@]}"; do
         [ -d "$dir" ] && [ -w "$dir" ] || continue
         candidate=$(mktemp --tmpdir="$dir" "${prefix}.XXXXXX" 2>/dev/null) || continue
         chmod 600 "$candidate" 2>/dev/null || true
@@ -170,11 +189,8 @@ safe_mktemp() {
         return 0
     done
 
-    # Last resort (should be rare)
-    candidate="/tmp/${prefix}.$$.$RANDOM"
-    : >"$candidate" 2>/dev/null || candidate="/tmp/${prefix}.$$"
-    chmod 600 "$candidate" 2>/dev/null || true
-    printf '%s\n' "$candidate"
+    error "safe_mktemp: mktemp failed for prefix=$prefix (checked: ${dirs[*]})"
+    return 1
 }
 
 require_cmds() {
@@ -217,9 +233,31 @@ load_config_files() {
             warn "Config $conf is not readable; skipping"
             continue
         fi
+        # Skip world-writable configs (tamper risk on multi-user hosts)
+        if [ -n "$(find "$conf" -maxdepth 0 -perm -002 2>/dev/null)" ]; then
+            warn "Config $conf is world-writable; skipping"
+            continue
+        fi
+        # Syntax-check before source (blocks many corrupt/malicious non-bash payloads)
+        if ! bash -n "$conf" 2>/dev/null; then
+            warn "Config $conf failed bash -n syntax check; skipping"
+            continue
+        fi
+        info "Loading config: $conf"
         # shellcheck source=/dev/null
         source "$conf"
     done
+}
+
+# Return 0 if grep -E can compile the pattern (exit 0 or 1), 1 if invalid (exit 2+).
+ere_is_valid() {
+    local re="$1" rc=0
+    [ -n "$re" ] || return 1
+    grep -Eq -- "$re" <<<'' >/dev/null 2>&1 || rc=$?
+    if [ "$rc" -ge 2 ]; then
+        return 1
+    fi
+    return 0
 }
 
 validate_config_values() {
@@ -278,6 +316,18 @@ validate_config_values() {
     fi
     if [ -z "${KERNEL_META_EXCLUDE_REGEX:-}" ]; then
         KERNEL_META_EXCLUDE_REGEX='linux-image-(generic|generic-hwe|amd64)(-lts|-hwe)?$'
+    fi
+    if ! ere_is_valid "$KERNEL_SUFFIX_EXCLUDE_REGEX"; then
+        warn "Invalid KERNEL_SUFFIX_EXCLUDE_REGEX; restoring default"
+        KERNEL_SUFFIX_EXCLUDE_REGEX='-(meta|dbg|dbgsym|rt|cloud|kvm|virtual)$'
+    fi
+    if ! ere_is_valid "$KERNEL_META_EXCLUDE_REGEX"; then
+        warn "Invalid KERNEL_META_EXCLUDE_REGEX; restoring default"
+        KERNEL_META_EXCLUDE_REGEX='linux-image-(generic|generic-hwe|amd64)(-lts|-hwe)?$'
+    fi
+    if ! [[ "${GPU_CLI_TIMEOUT_SECS:-}" =~ ^[0-9]+$ ]] || [ "${GPU_CLI_TIMEOUT_SECS:-0}" -lt 1 ]; then
+        warn "Invalid GPU_CLI_TIMEOUT_SECS; using 10"
+        # readonly may already be set — only warn; runtime uses ${GPU_CLI_TIMEOUT_SECS:-10}
     fi
 }
 
@@ -616,19 +666,21 @@ query_gpu_driver() {
     GPU_DRIVER=""
     GPU_RUNTIME=""
     GPU_COUNT=0
+    local t="${GPU_CLI_TIMEOUT_SECS:-10}"
 
-    # Prefer whatever vendor CLI is installed (order is opportunistic)
+    # Prefer whatever vendor CLI is installed (order is opportunistic).
+    # Timeouts avoid indefinite hangs on broken driver stacks.
     if has_cmd nvidia-smi; then
-        GPU_DRIVER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -n1 | tr -d '[:space:]' || true)
-        GPU_RUNTIME=$(nvidia-smi 2>/dev/null | awk -F'CUDA Version: ' '/CUDA Version:/ {print $2}' | awk '{print $1}' | head -n1 || true)
-        GPU_COUNT=$(nvidia-smi -L 2>/dev/null | grep -c '^GPU ' || true)
+        GPU_DRIVER=$(run_with_timeout "$t" nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -n1 | tr -d '[:space:]' || true)
+        GPU_RUNTIME=$(run_with_timeout "$t" nvidia-smi 2>/dev/null | awk -F'CUDA Version: ' '/CUDA Version:/ {print $2}' | awk '{print $1}' | head -n1 || true)
+        GPU_COUNT=$(run_with_timeout "$t" nvidia-smi -L 2>/dev/null | grep -c '^GPU ' || true)
         GPU_COUNT=${GPU_COUNT:-0}
         return 0
     fi
 
     if has_cmd rocm-smi; then
-        GPU_DRIVER=$(rocm-smi --showdriverversion 2>/dev/null | awk -F: '/Driver/{print $2; exit}' | tr -d '[:space:]' || true)
-        GPU_COUNT=$(rocm-smi -i 2>/dev/null | grep -cE 'GPU\[|Device' || true)
+        GPU_DRIVER=$(run_with_timeout "$t" rocm-smi --showdriverversion 2>/dev/null | awk -F: '/Driver/{print $2; exit}' | tr -d '[:space:]' || true)
+        GPU_COUNT=$(run_with_timeout "$t" rocm-smi -i 2>/dev/null | grep -cE 'GPU\[|Device' || true)
         GPU_COUNT=${GPU_COUNT:-0}
         return 0
     fi
@@ -644,12 +696,13 @@ count_gpu_compute_processes() {
     GPU_BUSY=false
 
     local apps=""
+    local t="${GPU_CLI_TIMEOUT_SECS:-10}"
 
     if has_cmd nvidia-smi; then
-        apps=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null | sed '/^[[:space:]]*$/d' | wc -l || true)
+        apps=$(run_with_timeout "$t" nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null | sed '/^[[:space:]]*$/d' | wc -l || true)
     elif has_cmd rocm-smi; then
         # Best-effort: count non-header process lines if supported
-        apps=$(rocm-smi --showpids 2>/dev/null | grep -cE '^[0-9]' || true)
+        apps=$(run_with_timeout "$t" rocm-smi --showpids 2>/dev/null | grep -cE '^[0-9]' || true)
     else
         return 0
     fi
@@ -682,14 +735,15 @@ report_gpu_health() {
     [ -n "$GPU_RUNTIME" ] && info "GPU runtime (vendor-reported): $GPU_RUNTIME"
     info "GPU count: $GPU_COUNT"
 
+    local t="${GPU_CLI_TIMEOUT_SECS:-10}"
     if has_cmd nvidia-smi && [ "$GPU_COUNT" -gt 0 ]; then
         info "GPU inventory:"
-        nvidia-smi -L 2>/dev/null | while IFS= read -r line; do
+        run_with_timeout "$t" nvidia-smi -L 2>/dev/null | while IFS= read -r line; do
             info "  $line"
         done || true
 
         info "GPU utilization / memory (snapshot):"
-        nvidia-smi --query-gpu=index,name,temperature.gpu,utilization.gpu,utilization.memory,memory.used,memory.total,power.draw \
+        run_with_timeout "$t" nvidia-smi --query-gpu=index,name,temperature.gpu,utilization.gpu,utilization.memory,memory.used,memory.total,power.draw \
             --format=csv 2>/dev/null | while IFS= read -r line; do
             info "  $line"
         done || true
@@ -704,7 +758,7 @@ report_gpu_health() {
     if truthy "${GPU_BUSY:-false}"; then
         warn "GPU compute processes active: $GPU_PROCESS_COUNT (workloads in progress)"
         if has_cmd nvidia-smi; then
-            nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory \
+            run_with_timeout "${GPU_CLI_TIMEOUT_SECS:-10}" nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory \
                 --format=csv 2>/dev/null | while IFS= read -r line; do
                 warn "  $line"
             done || true
@@ -812,6 +866,7 @@ hold_nvidia_packages() { hold_gpu_packages; }
 
 docker_cleanup() {
     local mode="${DOCKER_PRUNE,,}"
+    local dangling_n=0 total_n=0
 
     if ! has_cmd docker; then
         return 0
@@ -827,8 +882,17 @@ docker_cleanup() {
         return 0
     fi
 
+    # Preview reclaimable images (best-effort; never fails the run)
+    dangling_n=$(docker images -f dangling=true -q 2>/dev/null | wc -l | tr -d ' ' || echo 0)
+    total_n=$(docker images -q 2>/dev/null | wc -l | tr -d ' ' || echo 0)
+    info "Docker prune preview: mode=$mode dangling_images=${dangling_n:-0} total_images=${total_n:-0}"
+
     if truthy "${DRY_RUN:-false}"; then
-        info "DRY-RUN: would docker prune mode=$mode"
+        info "DRY-RUN: would docker prune mode=$mode (no images removed)"
+        case "$mode" in
+            dangling) info "DRY-RUN: would remove up to ${dangling_n:-0} dangling image ID(s)" ;;
+            unused|all) info "DRY-RUN: would prune unused/all images (total≈${total_n:-0}; volumes excluded for 'all')" ;;
+        esac
         return 0
     fi
 
@@ -878,7 +942,8 @@ write_last_run_json() {
     [[ "$busy_procs" =~ ^[0-9]+$ ]] || busy_procs=0
     [[ "$failures" =~ ^[0-9]+$ ]] || failures=0
 
-    jq_err=$(safe_mktemp "update-clean-jq")
+    jq_err=$(safe_mktemp "update-clean-jq" 2>/dev/null) || jq_err=""
+    [ -n "$jq_err" ] || jq_err="/dev/null"
     if jq -n \
         --argjson schema "$schema" \
         --arg v "$version" \
@@ -1129,7 +1194,11 @@ run_logged_cmd() {
     local tmp rc=0
     local apt_log="${APT_LOG:-/dev/null}"
 
-    tmp=$(safe_mktemp "update-clean-cmd")
+    if ! tmp=$(safe_mktemp "update-clean-cmd"); then
+        error "Cannot create temp file for: $desc"
+        _record_failure
+        return 1
+    fi
     set +e
     "$@" >"$tmp" 2>&1
     rc=$?
@@ -1189,7 +1258,8 @@ remove_old_kernels() {
     if [ -d /boot ]; then
         boot_kb=$(get_avail_kb /boot)
         if [ "$boot_kb" -lt "$BOOT_MIN_KB" ]; then
-            warn "Skipping kernel removal: /boot has less than $((BOOT_MIN_KB / 1024)) MB free"
+            warn "Skipping kernel removal: /boot has ${boot_kb} KB free (need >= ${BOOT_MIN_KB} KB / $((BOOT_MIN_KB / 1024)) MB)"
+            warn "Kernel cleanup skipped (not a failure); free /boot and re-run to purge old kernels"
             return 0
         fi
     fi
@@ -1230,7 +1300,8 @@ remove_old_kernels() {
 
     delcount=$(( ${#to_remove[@]} - keep ))
     if [ "$delcount" -lt 1 ] || [ "$delcount" -gt "${#to_remove[@]}" ]; then
-        warn "Kernel removal count out of range; skipping removal"
+        warn "Kernel removal skipped: delcount=$delcount invalid (candidates=${#to_remove[@]} keep=$keep)"
+        warn "No kernels purged this run (safety gate); check KERNEL_KEEP and installed linux-image packages"
         return 0
     fi
     KERNELS_REMOVED=true
@@ -1351,7 +1422,11 @@ safe_run() {
     shift
     local tmp rc=0
     info "$desc"
-    tmp=$(safe_mktemp "update-clean-safe")
+    if ! tmp=$(safe_mktemp "update-clean-safe"); then
+        warn "$desc failed — cannot create temp file"
+        _record_failure
+        return 0
+    fi
     set +e
     "$@" >"$tmp" 2>&1
     rc=$?
@@ -1445,6 +1520,7 @@ Environment / Config:
   JOURNAL_VACUUM_TIME  journalctl --vacuum-time value (default: 30d)
   VERBOSITY         quiet|normal|verbose (default: normal)
   CONSOLE_APT_MAX_LINES  Console cap for apt output (default: 80; 0=unlimited)
+  GPU_CLI_TIMEOUT_SECS Timeout for vendor GPU CLIs (default: 10)
   ADMIN_EMAIL       Optional email address for completion notification
   CRITICAL_PACKAGES Array of packages to hold during cleanup
 
