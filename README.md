@@ -97,8 +97,11 @@ CRITICAL_PACKAGES=(base-files base-passwd bash coreutils util-linux)
 | `SKIP_FIRMWARE` | `true` | Skip `fwupd` (use NVIDIA/BCM workflows instead) |
 | `HOLD_NVIDIA` | `true` | `apt-mark hold` NVIDIA/CUDA-related packages during cleanup |
 | `DOCKER_PRUNE` | `dangling` | `none` / `dangling` / `unused` / `all` |
+| `JOURNAL_VACUUM_TIME` | `30d` | Passed to `journalctl --vacuum-time` |
 | `KERNEL_KEEP` | `2` | Extra kernels kept besides the running one |
 | `REBOOT_IF_REQUIRED` | `false` | Auto-reboot; blocked if GPU compute jobs are active |
+
+**last-run.json** includes `schema_version` (currently `1`) plus driver/GPU fields for fleet scrapers.
 
 ### Logging & Records
 

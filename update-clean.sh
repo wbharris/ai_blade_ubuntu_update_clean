@@ -20,10 +20,16 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
-# Requirements: Bash 4+, run as root (sudo), apt-based Ubuntu/Debian
+# Requirements:
+#   - Bash 4+ (mapfile, ${var,,}, associative arrays)
+#   - Root for full update path (sudo); --gpu-only works unprivileged with reduced detail
+#   - apt-based Ubuntu/Debian (DGX OS, HGX blades, SuperPOD nodes)
+#   - Required commands: apt-get, dpkg, awk, sed, grep, tar, mktemp, flock
+#   - Optional: nvidia-smi, jq, docker, fwupdmgr, curl/wget, fuser/lsof, logger
 # Config: /etc/update-clean.conf, root or SUDO_USER home configs (see README)
-# Logs: /var/log/update-clean/ (retention via LOG_RETENTION)
+# Logs: /var/log/update-clean/ (retention via LOG_RETENTION); mode 0600
 # Exit codes: 0 = success; 1 = one or more failures (count in FAILURES / EXIT_CODE)
+# last-run.json schema_version: 1 (stable fields; see write_last_run_json)
 #
 # Usage: sudo ./update-clean.sh [--dry-run] [--no-kernel] [--help] [--version]
 # Recommended: run weekly during maintenance windows on SuperPOD blades
@@ -63,6 +69,10 @@ GPU_ONLY=false
 LOG_RETENTION=${LOG_RETENTION:-3}
 KERNEL_KEEP=${KERNEL_KEEP:-2}
 KERNEL_KEEP_MAX=${KERNEL_KEEP_MAX:-10}
+# journalctl --vacuum-time value (e.g. 30d, 14d, 1week)
+JOURNAL_VACUUM_TIME=${JOURNAL_VACUUM_TIME:-30d}
+# last-run.json schema (bump when removing/renaming fields)
+readonly LAST_RUN_JSON_SCHEMA=1
 BACKUP_MODE=${BACKUP_MODE:-false}
 REBOOT_IF_REQUIRED=${REBOOT_IF_REQUIRED:-false}
 LOG_DIR="${LOG_DIR:-/var/log/update-clean}"
@@ -89,6 +99,8 @@ readonly MIN_LOG_DIR_KB=${MIN_LOG_DIR_KB:-1024}    # 1 MB
 readonly BOOT_MIN_KB=${BOOT_MIN_KB:-10240}         # 10 MB — skip kernel removal
 readonly BOOT_LOW_KB=${BOOT_LOW_KB:-51200}         # 50 MB — low /boot warning
 readonly APT_UPDATE_MAX_RETRIES=${APT_UPDATE_MAX_RETRIES:-3}
+readonly APT_LOCK_WAIT_SECS=${APT_LOCK_WAIT_SECS:-60}
+readonly APT_LOCK_POLL_SECS=${APT_LOCK_POLL_SECS:-5}
 # AI blades often store container images under /var — warn if low
 readonly VAR_LOW_KB=${VAR_LOW_KB:-10485760}        # 10 GB low /var warning
 
@@ -329,9 +341,9 @@ format_cmd_args() {
     printf '%s' "${out%" "}"
 }
 
-# is_apt_locked: returns 0 if an apt/dpkg lock is held, 1 if unlocked.
-# (Return 0 means "locked" — inverted from typical "success = free" wording.)
-is_apt_locked() {
+# apt_lock_held: returns 0 when an apt/dpkg lock is held, 1 when free.
+# Prefer this name over "is_apt_locked" (return 0 = held, not "success free").
+apt_lock_held() {
     local locks=(
         /var/lib/dpkg/lock-frontend
         /var/lib/dpkg/lock
@@ -366,6 +378,45 @@ is_apt_locked() {
     return 1
 }
 
+# Backward-compatible alias (same return convention: 0 = held).
+is_apt_locked() { apt_lock_held; }
+
+# Print lock path and PIDs holding apt/dpkg locks (best-effort).
+report_apt_lock_holders() {
+    local locks=(
+        /var/lib/dpkg/lock-frontend
+        /var/lib/dpkg/lock
+        /var/lib/apt/lists/lock
+        /var/cache/apt/archives/lock
+    )
+    local lock pids
+
+    for lock in "${locks[@]}"; do
+        [ -e "$lock" ] || continue
+        pids=""
+        if has_cmd fuser; then
+            pids=$(fuser "$lock" 2>/dev/null | tr -s '[:space:]' ' ' | sed 's/^ *//;s/ *$//')
+        elif has_cmd lsof; then
+            pids=$(lsof -t "$lock" 2>/dev/null | tr '\n' ' ' | sed 's/ *$//')
+        fi
+        if [ -n "$pids" ]; then
+            warn "APT lock held: $lock by PID(s): $pids"
+            if has_cmd ps; then
+                # shellcheck disable=SC2086
+                ps -o pid,user,cmd -p $pids 2>/dev/null | sed '1d;s/^/  /' | while IFS= read -r line; do
+                    [ -n "$line" ] && warn "$line"
+                done || true
+            fi
+        fi
+    done
+}
+
+# Versioned kernel *image* packages only (safe to purge when old).
+# Excludes:
+#   - meta packages: linux-image-generic, linux-image-generic-hwe*, linux-image-amd64*
+#     (these are virtual/meta targets, not bootable versioned images)
+#   - suffix variants: -meta, -dbg, -dbgsym, -rt, -cloud, -kvm, -virtual
+# Intent: manage real linux-image-<version>-generic style packages only.
 list_installed_kernel_images() {
     dpkg-query -W -f='${Status}\t${Package}\n' 'linux-image-*' 2>/dev/null \
         | awk -F'\t' '$1 ~ /^install ok installed/ {print $2}' \
@@ -710,6 +761,68 @@ guard_reboot_if_gpus_busy() {
     return 0
 }
 
+
+# Write stable last-run.json (schema_version in LAST_RUN_JSON_SCHEMA).
+# Numeric fields use --argjson; failures surface on APT_LOG / stderr (not discarded).
+write_last_run_json() {
+    local out="$1"
+    local version="$2" distro="$3" platform="$4" driver="$5" cuda="$6"
+    local gpus="$7" busy_procs="$8" ts="$9" status="${10}" failures="${11}"
+    local freed="${12}" reboot="${13}" logf="${14}"
+    local jq_err schema
+    local apt_log="${APT_LOG:-/dev/null}"
+
+    schema="${LAST_RUN_JSON_SCHEMA:-1}"
+    # Guard non-numeric JSON fields that --argjson requires
+    [[ "$gpus" =~ ^[0-9]+$ ]] || gpus=0
+    [[ "$busy_procs" =~ ^[0-9]+$ ]] || busy_procs=0
+    [[ "$failures" =~ ^[0-9]+$ ]] || failures=0
+
+    jq_err=$(mktemp 2>/dev/null || echo "/tmp/update-clean-jq.err")
+    if jq -n \
+        --argjson schema "$schema" \
+        --arg v "$version" \
+        --arg d "$distro" \
+        --arg platform "$platform" \
+        --arg driver "$driver" \
+        --arg cuda "$cuda" \
+        --argjson gpus "$gpus" \
+        --argjson busy_procs "$busy_procs" \
+        --arg t "$ts" \
+        --arg status "$status" \
+        --argjson failures "$failures" \
+        --arg freed "$freed" \
+        --arg reboot "$reboot" \
+        --arg log "$logf" \
+        '{
+            schema_version: $schema,
+            version: $v,
+            distro: $d,
+            ai_platform: $platform,
+            nvidia_driver: $driver,
+            cuda_version: $cuda,
+            gpu_count: $gpus,
+            gpu_process_count: $busy_procs,
+            timestamp: $t,
+            status: $status,
+            failures: $failures,
+            disk_freed_mb: $freed,
+            reboot_required: $reboot,
+            log_file: $log
+        }' >"$out" 2>"$jq_err"
+    then
+        chmod 600 "$out" 2>/dev/null || true
+        rm -f "$jq_err" 2>/dev/null || true
+        return 0
+    fi
+    if [ -s "$jq_err" ]; then
+        warn "jq last-run.json error: $(tr '\\n' ' ' <"$jq_err")"
+        cat "$jq_err" >>"$apt_log" 2>/dev/null || true
+    fi
+    rm -f "$jq_err" 2>/dev/null || true
+    return 1
+}
+
 check_debian_based() {
     if ! has_cmd apt; then
         error "This script requires apt and is intended for Debian-based systems."
@@ -726,17 +839,63 @@ check_debian_based() {
     esac
 }
 
+# Load apt Acquire::http(s)::Proxy into env if not already set (restricted nets).
+load_apt_proxy_env() {
+    local conf_out http_p https_p
+
+    if [ -n "${http_proxy:-}${HTTP_PROXY:-}${https_proxy:-}${HTTPS_PROXY:-}" ]; then
+        return 0
+    fi
+    if ! has_cmd apt-config; then
+        return 0
+    fi
+
+    conf_out=$(apt-config shell HTTP_PROXY Acquire::http::Proxy HTTPS_PROXY Acquire::https::Proxy 2>/dev/null || true)
+    # apt-config shell emits: HTTP_PROXY='http://...'
+    eval "$conf_out" 2>/dev/null || true
+    http_p="${HTTP_PROXY:-}"
+    https_p="${HTTPS_PROXY:-}"
+    if [ -n "$http_p" ] && [ -z "${http_proxy:-}" ]; then
+        export http_proxy="$http_p"
+        export HTTP_PROXY="$http_p"
+    fi
+    if [ -n "$https_p" ] && [ -z "${https_proxy:-}" ]; then
+        export https_proxy="$https_p"
+        export HTTPS_PROXY="$https_p"
+    elif [ -n "$http_p" ] && [ -z "${https_proxy:-}" ]; then
+        export https_proxy="$http_p"
+        export HTTPS_PROXY="$http_p"
+    fi
+}
+
 check_connectivity() {
     local host="${ARCHIVE_HOST:-deb.debian.org}"
+    local -a curl_opts=( -sSf --connect-timeout 5 )
+    local -a wget_opts=( -q --timeout=5 --spider )
 
+    load_apt_proxy_env
+
+    # curl/wget honor http_proxy/https_proxy/HTTP_PROXY/HTTPS_PROXY when set
     if has_cmd curl; then
-        if curl -sSf --connect-timeout 5 "https://${host}/" >/dev/null 2>&1; then
+        if curl "${curl_opts[@]}" "https://${host}/" >/dev/null 2>&1; then
+            return 0
+        fi
+        if curl "${curl_opts[@]}" "http://${host}/" >/dev/null 2>&1; then
             return 0
         fi
     elif has_cmd wget; then
-        if wget -q --timeout=5 --spider "https://${host}/" >/dev/null 2>&1; then
+        if wget "${wget_opts[@]}" "https://${host}/" >/dev/null 2>&1; then
             return 0
         fi
+        if wget "${wget_opts[@]}" "http://${host}/" >/dev/null 2>&1; then
+            return 0
+        fi
+    fi
+
+    if [ -n "${http_proxy:-}${HTTP_PROXY:-}${https_proxy:-}${HTTPS_PROXY:-}" ]; then
+        info "Proxy env present (http_proxy/https_proxy); HTTPS archive probe failed — relying on apt"
+        # Proxy environments often block direct archive HTTPS; apt may still work.
+        return 0
     fi
 
     if has_cmd getent && getent hosts "$host" >/dev/null 2>&1; then
@@ -1051,6 +1210,7 @@ Options:
   --offline         Skip internet connectivity checks
   --no-gpu-check    Skip NVIDIA GPU health / busy checks
   --gpu-only        Report AI blade / GPU health only, then exit
+                    (works without root; systemctl/dmidecode detail may be limited)
   --no-firmware     Skip fwupd firmware updates (default on AI blades)
   --with-firmware   Allow fwupd firmware updates
   --no-hold-nvidia  Do not apt-mark hold NVIDIA/CUDA packages during cleanup
@@ -1072,6 +1232,7 @@ Environment / Config:
   SKIP_FIRMWARE     Skip fwupd (default: true on AI blades)
   HOLD_NVIDIA       Hold NVIDIA/CUDA packages during cleanup (default: true)
   DOCKER_PRUNE      none|dangling|unused|all (default: dangling)
+  JOURNAL_VACUUM_TIME  journalctl --vacuum-time value (default: 30d)
   ADMIN_EMAIL       Optional email address for completion notification
   CRITICAL_PACKAGES Array of packages to hold during cleanup
 
@@ -1149,9 +1310,9 @@ run_preflight_checks() {
     done
 
     printf 'APT lock free: '
-    if ! has_cmd fuser; then
-        printf '%s\n' "UNKNOWN (fuser not installed)"
-    elif is_apt_locked; then
+    if ! has_cmd fuser && ! has_cmd lsof; then
+        printf '%s\n' "UNKNOWN (fuser/lsof not installed)"
+    elif apt_lock_held; then
         printf '%s\n' "LOCKED"
     else
         printf '%s\n' "OK"
@@ -1317,8 +1478,12 @@ if $DEBUG; then
 fi
 
 if $GPU_ONLY; then
-    # Health-only path: no root required for most queries, but some need it
-    info "GPU-only mode — reporting AI blade health and exiting"
+    # Health-only path: no root required for most queries; some detail needs root
+    if [ "$EUID" -ne 0 ]; then
+        info "GPU-only mode (non-root) — nvidia-smi works; dmidecode/systemctl may be limited"
+    else
+        info "GPU-only mode — reporting AI blade health and exiting"
+    fi
     report_gpu_health
     exit 0
 fi
@@ -1350,7 +1515,11 @@ fi
 
 LOG_FILE=$(mktemp --tmpdir="$LOG_DIR" "update-clean-$(date +%Y%m%d-%H%M%S)-XXXXXX.log") \
     || { printf '%s\n' "Cannot create log file in $LOG_DIR" >&2; exit 1; }
+# Explicit mode for multi-user / multi-tenant blades (mktemp is usually 0600 already)
+chmod 600 "$LOG_FILE" || true
 APT_LOG="${LOG_FILE}.apt-warnings"
+: >"$APT_LOG"
+chmod 600 "$APT_LOG" || true
 
 exec > >(tee >(sed 's/\x1b\[[0-9;]*m//g' >> "$LOG_FILE")) 2>&1
 
@@ -1399,18 +1568,20 @@ else
     info "Skipping GPU health checks (--no-gpu-check)"
 fi
 
-if is_apt_locked; then
-    warn "APT is locked by another process. Waiting up to 60s..."
-    for _ in {1..12}; do
-        if ! is_apt_locked; then
-            break
-        fi
-        sleep 5
+if apt_lock_held; then
+    warn "APT is locked by another process. Waiting up to ${APT_LOCK_WAIT_SECS}s..."
+    report_apt_lock_holders
+    _apt_waited=0
+    while apt_lock_held && [ "$_apt_waited" -lt "$APT_LOCK_WAIT_SECS" ]; do
+        sleep "$APT_LOCK_POLL_SECS"
+        _apt_waited=$((_apt_waited + APT_LOCK_POLL_SECS))
     done
-    if is_apt_locked; then
-        error "APT still locked after waiting. Please resolve and try again."
+    if apt_lock_held; then
+        report_apt_lock_holders
+        error "APT still locked after ${APT_LOCK_WAIT_SECS}s. Please resolve and try again."
         exit 1
     fi
+    info "APT lock released after ${_apt_waited}s"
 fi
 
 if ! check_systemd_resolved; then
@@ -1583,9 +1754,10 @@ docker_cleanup
 
 if has_cmd journalctl; then
     if $DRY_RUN; then
-        info "DRY-RUN: Would vacuum journal logs"
+        info "DRY-RUN: Would vacuum journal logs (vacuum-time=${JOURNAL_VACUUM_TIME})"
     else
-        safe_run "Vacuuming journal logs (last 30 days)" journalctl --vacuum-time=30d
+        safe_run "Vacuuming journal logs (vacuum-time=${JOURNAL_VACUUM_TIME})" \
+            journalctl --vacuum-time="${JOURNAL_VACUUM_TIME}"
     fi
 fi
 
@@ -1668,22 +1840,21 @@ REBOOT_REQUIRED=$REBOOT_FLAG
 LOG_FILE=$LOG_FILE
 LAST
     if has_cmd jq; then
-        jq -n \
-            --arg v "$SCRIPT_VERSION" \
-            --arg d "$DISTRO_NAME" \
-            --arg platform "$AI_PLATFORM" \
-            --arg driver "${NVIDIA_DRIVER:-}" \
-            --arg cuda "${CUDA_VERSION:-}" \
-            --argjson gpus "${GPU_COUNT:-0}" \
-            --argjson busy_procs "${GPU_PROCESS_COUNT:-0}" \
-            --arg t "$RUN_TIMESTAMP" \
-            --arg status "$RUN_STATUS" \
-            --argjson failures "$EXIT_CODE" \
-            --arg freed "$FREED_MB" \
-            --arg reboot "$REBOOT_FLAG" \
-            --arg log "$LOG_FILE" \
-            '{version:$v,distro:$d,ai_platform:$platform,nvidia_driver:$driver,cuda_version:$cuda,gpu_count:$gpus,gpu_process_count:$busy_procs,timestamp:$t,status:$status,failures:$failures,disk_freed_mb:$freed,reboot_required:$reboot,log_file:$log}' \
-            >"$LAST_RUN_DIR/last-run.json" 2>/dev/null \
+        write_last_run_json \
+            "$LAST_RUN_DIR/last-run.json" \
+            "$SCRIPT_VERSION" \
+            "$DISTRO_NAME" \
+            "$AI_PLATFORM" \
+            "${NVIDIA_DRIVER:-}" \
+            "${CUDA_VERSION:-}" \
+            "${GPU_COUNT:-0}" \
+            "${GPU_PROCESS_COUNT:-0}" \
+            "$RUN_TIMESTAMP" \
+            "$RUN_STATUS" \
+            "$EXIT_CODE" \
+            "$FREED_MB" \
+            "$REBOOT_FLAG" \
+            "$LOG_FILE" \
             || warn "Failed to write $LAST_RUN_DIR/last-run.json"
     fi
     info "Last run record written to $LAST_RUN_FILE"

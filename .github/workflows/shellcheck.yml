@@ -12,9 +12,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run ShellCheck
+      - name: Run ShellCheck (error severity)
         uses: ludeeus/action-shellcheck@master
         with:
           scandir: '.'
           severity: error
           check_together: 'yes'
+          # Include nested fleet/bcm helpers
+          additional_files: 'fleet/update-clean-fleet.sh bcm/bcm-hooks.sh'

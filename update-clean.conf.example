@@ -35,6 +35,13 @@
 # Docker image prune: none | dangling | unused | all (default: dangling)
 # DOCKER_PRUNE=dangling
 
+# journalctl vacuum window (default: 30d)
+# JOURNAL_VACUUM_TIME=14d
+
+# APT lock wait (seconds) when another apt/dpkg process holds locks
+# APT_LOCK_WAIT_SECS=60
+# APT_LOCK_POLL_SECS=5
+
 # Optional completion email (requires mail command)
 # ADMIN_EMAIL=hpc-ops@example.com
 

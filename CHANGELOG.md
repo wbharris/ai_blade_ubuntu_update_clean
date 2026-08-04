@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here.
 
+## [1.1.1] - 2026-08-04
+
+### Fixed / hardened (code review)
+- `write_last_run_json()`: stable `schema_version: 1`, numeric `--argjson` guards, jq errors logged (no silent `2>/dev/null`)
+- Explicit `chmod 600` on `LOG_FILE` and `APT_LOG` (and last-run JSON)
+- Rename preferred lock helper to `apt_lock_held` (keep `is_apt_locked` alias); report lock holder PIDs via fuser/lsof/ps
+- Configurable APT lock wait (`APT_LOCK_WAIT_SECS` / `APT_LOCK_POLL_SECS`)
+- Connectivity honors `http_proxy`/`https_proxy` and loads apt `Acquire::*::Proxy` when env unset
+- Document kernel meta-package exclusions; `--gpu-only` non-root note
+- Configurable `JOURNAL_VACUUM_TIME` (default `30d`)
+- Header documents required/optional commands and last-run JSON schema
+
 ## [1.1.0] - 2026-08-04
 
 ### Added
