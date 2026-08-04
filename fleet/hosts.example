@@ -7,14 +7,14 @@
 #   user@hostname:port
 #   user@ip
 #
-# Examples for a SuperPOD-style rack (replace with your names):
+# Examples for a multi-node GPU rack (replace with your names):
 #
-# dgx-a100-01
-# dgx-a100-02
+# gpu-node-01
+# gpu-node-02
 # ubuntu@blade-03
 # root@10.20.30.40:22
 #
-# Or use a BCM category expansion — see bcm/ and --from-bcm-category
+# Or use a cmsh category expansion — see bcm/ and --from-bcm-category
 
 # node001
 # node002

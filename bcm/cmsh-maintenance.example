@@ -1,9 +1,10 @@
-# Example cmsh session for SuperPOD / BCM maintenance windows
+# Example cmsh session for multi-node GPU fleet maintenance windows
 # Copyright (C) 2026 wbharris
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Adjust category names (gpu, compute, dgx) and WLM module (slurm) for your site.
+# Adjust category names (gpu, compute) and WLM module (slurm) for your site.
 # Prefer the wrapper: ./bcm/bcm-hooks.sh maintenance gpu "reason" start|end
+# Optional — only for sites that already run cmsh/pdsh.
 
 ############################################################
 # 1) Inventory
@@ -16,10 +17,10 @@
 ############################################################
 # 2) Start maintenance — stop new work
 ############################################################
-# Device-level close (BCM):
+# Device-level close:
 #   cmsh -c 'device; foreach -c gpu (set status closed; set notes "update-clean"; commit)'
 #
-# Slurm drain via cmsh (if WLM module enabled):
+# WLM drain via cmsh (if WLM module enabled):
 #   cmsh -c 'wlm; use slurm; nodes; drain node001,node002 "update-clean maintenance"'
 #
 # Or native Slurm on head node:
@@ -29,7 +30,8 @@
 # 3) Wait for jobs to finish / GPU idle
 ############################################################
 #   squeue -w node001
-#   pdsh -g gpu 'nvidia-smi --query-compute-apps=pid --format=csv,noheader | wc -l'
+#   # vendor CLI when present, e.g.:
+#   pdsh -g gpu 'command -v nvidia-smi >/dev/null && nvidia-smi --query-compute-apps=pid --format=csv,noheader | wc -l || echo 0'
 
 ############################################################
 # 4) Deploy + run update-clean (from admin workstation / head)
@@ -52,6 +54,6 @@
 ############################################################
 # Notes
 ############################################################
-# - Do NOT auto-reboot multi-tenant SuperPOD blades without orchestration.
-# - Firmware / DGX OS major upgrades stay on NVIDIA-documented paths.
-# - update-clean is host package hygiene between vendor maintenance windows.
+# - Do NOT auto-reboot multi-tenant blades without orchestration.
+# - Vendor OS major upgrades and fabric firmware stay on site-approved paths.
+# - update-clean is host package hygiene between maintenance windows.

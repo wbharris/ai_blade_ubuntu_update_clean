@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented here.
 
+## [1.3.0] - 2026-08-04
+
+### Changed (vendor-agnostic rebrand)
+- Messaging and docs no longer position the project as vendor-specific (no product branding claims)
+- Primary config/CLI: `HOLD_GPU` / `--no-hold-gpu` (`HOLD_NVIDIA` / `--no-hold-nvidia` kept as deprecated aliases)
+- last-run fields: `gpu_driver`, `gpu_runtime` (`schema_version` → **2**)
+- Platform labels: `gpu-host` / `gpu-server` / `gpu-appliance` instead of vendor product names
+- GPU health uses vendor CLIs opportunistically when present; hold list covers multiple common stacks
+- Cluster hooks described as optional cmsh/pdsh helpers (not a product integration)
+
 ## [1.2.0] - 2026-08-04
 
 ### Added (complete remaining code-review items)

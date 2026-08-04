@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# NVIDIA Base Command Manager (BCM) / Bright Cluster Manager hooks
+# Cluster manager hooks (cmsh / pdsh / Bright-compatible)
 #
 # Copyright (C) 2026 wbharris
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Helpers for SuperPOD-style fleets managed by BCM (cmsh, pdsh, categories).
+# Optional helpers for fleets managed via cmsh + pdsh categories.
+# Not affiliated with any vendor product; uses local tools when present.
 # Source this file or run: ./bcm/bcm-hooks.sh <command> [args...]
 #
 # Typical maintenance flow:
@@ -38,12 +39,12 @@ bcm_have_pdsh() {
 
 bcm_require_cmsh() {
     if ! bcm_have_cmsh; then
-        printf '%s\n' "cmsh not found (set CMSH_BIN or run on BCM head node)" >&2
+        printf '%s\n' "cmsh not found (set CMSH_BIN or run on a cluster head node)" >&2
         return 1
     fi
 }
 
-# List node hostnames in a BCM device category (e.g. gpu, compute, dgx)
+# List node hostnames in a device category (e.g. gpu, compute)
 bcm_list_category_nodes() {
     local category="${1:?category required}"
     bcm_require_cmsh
@@ -216,7 +217,7 @@ bcm_maintenance_window() {
 
 bcm_cli_usage() {
     cat <<'EOF'
-BCM hooks — SuperPOD / Base Command Manager helpers
+Cluster manager hooks (cmsh / pdsh) — optional fleet helpers
 
 Usage: bcm-hooks.sh <command> [args]
 
@@ -238,7 +239,7 @@ Environment:
   BCM_DEVICE_CLOSED_STATUS   default: closed
   BCM_DEVICE_OPEN_STATUS     default: ok
 
-Example SuperPOD window:
+Example maintenance window:
   ./bcm/bcm-hooks.sh maintenance gpu "weekly update-clean" start
   ./fleet/update-clean-fleet.sh --from-bcm-category gpu --deploy --parallel 4 --
   ./bcm/bcm-hooks.sh maintenance gpu end

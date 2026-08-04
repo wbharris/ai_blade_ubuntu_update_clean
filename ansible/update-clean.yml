@@ -38,12 +38,16 @@
 
     - name: Check GPU compute process count
       ansible.builtin.shell: |
-        if ! command -v nvidia-smi >/dev/null 2>&1; then
-          echo 0
+        if command -v nvidia-smi >/dev/null 2>&1; then
+          nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null \
+            | sed '/^[[:space:]]*$/d' | wc -l
           exit 0
         fi
-        nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null \
-          | sed '/^[[:space:]]*$/d' | wc -l
+        if command -v rocm-smi >/dev/null 2>&1; then
+          rocm-smi --showpids 2>/dev/null | grep -cE '^[0-9]' || echo 0
+          exit 0
+        fi
+        echo 0
       args:
         executable: /bin/bash
       register: gpu_busy

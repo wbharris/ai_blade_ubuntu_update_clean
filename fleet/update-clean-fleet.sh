@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Multi-node SuperPOD / AI blade fleet runner for update-clean.sh
+# Multi-node AI / GPU blade fleet runner for update-clean.sh
 #
 # Copyright (C) 2026 wbharris
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Runs (or deploys + runs) update-clean across many Ubuntu GPU blades over SSH.
 # Supports drain checks (skip or wait while GPUs busy), parallel execution,
-# and optional BCM category inventory (see ../bcm/).
+# and optional cmsh category inventory (see ../bcm/).
 #
 # Usage:
 #   ./fleet/update-clean-fleet.sh -f fleet/hosts.example --gpu-only
@@ -201,7 +201,7 @@ remote_gpu_busy_count() {
     local target="$1" port="$2"
     local out remote_script
     # Single remote one-liner avoids heredoc-inside-$(...) parse issues
-    remote_script='if ! command -v nvidia-smi >/dev/null 2>&1; then echo 0; exit 0; fi; n=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null | sed "/^[[:space:]]*$/d" | wc -l); echo "${n// /}"'
+    remote_script='if command -v nvidia-smi >/dev/null 2>&1; then n=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null | sed "/^[[:space:]]*$/d" | wc -l); echo "${n// /}"; exit 0; fi; if command -v rocm-smi >/dev/null 2>&1; then n=$(rocm-smi --showpids 2>/dev/null | grep -cE "^[0-9]" || echo 0); echo "${n// /}"; exit 0; fi; echo 0'
     out=$(ssh_cmd "$target" "$port" "bash -c $(printf '%q' "$remote_script")" 2>/dev/null) || {
         echo "err"
         return 0

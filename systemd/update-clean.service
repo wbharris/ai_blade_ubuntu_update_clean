@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 [Unit]
-Description=AI blade / SuperPOD system update and cleanup (update-clean)
+Description=AI/GPU blade system update and cleanup (update-clean)
 Documentation=https://github.com/wbharris/ai_blade_ubuntu_update_clean
 After=network-online.target
 Wants=network-online.target

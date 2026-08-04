@@ -1,14 +1,16 @@
 # ai_blade_ubuntu_update_clean
 
-One clean **update and cleanup** script for **Ubuntu AI compute blades** — NVIDIA **DGX**, **HGX**, **SuperPOD** nodes, and other apt-based GPU servers.
+One clean **update and cleanup** script for **Ubuntu AI / GPU compute blades** and other apt-based GPU servers.
 
-**Derived from** [`debian_ubuntu_update_clean`](https://github.com/wbharris/debian_ubuntu_update_clean) (same core apt safety model), with SuperPOD-oriented GPU health, driver holds, firmware caution, and container cleanup.
+**Derived from** [`debian_ubuntu_update_clean`](https://github.com/wbharris/debian_ubuntu_update_clean) (same core apt safety model), with GPU-host health checks, vendor-package holds, firmware caution, and container cleanup.
 
 **Version:** See the `VERSION` file (or run `./update-clean.sh --version`)
 
+This project is **vendor-agnostic**. It is not affiliated with any GPU or cluster vendor. Optional tooling (for example a vendor GPU CLI, fabric units, or `cmsh`) is used only when already installed on the host.
+
 ## Main Script
 
-**`update-clean.sh`** — System update + cleanup, with AI blade awareness.
+**`update-clean.sh`** — System update + cleanup, with AI/GPU blade awareness.
 
 ### What it does
 
@@ -22,19 +24,20 @@ One clean **update and cleanup** script for **Ubuntu AI compute blades** — NVI
 - Purge residual config files (`apt purge '~c'`)
 - Remove old kernels (keeps current + previous for safety)
 - Snap / Flatpak cleanup when present
-- Vacuum journal logs (last 30 days)
+- Vacuum journal logs (configurable retention)
 - Clean partial apt lists, rebuild man/locate DBs, update GRUB after kernel changes
 
-**AI blade / SuperPOD extras:**
-- Detects **DGX OS**, **HGX**, **SuperPOD**, or generic NVIDIA GPU hosts
-- **GPU health report**: `nvidia-smi` inventory, driver/CUDA versions, utilization snapshot
-- Detects **busy GPUs** (active compute processes) and **blocks auto-reboot** while jobs run
-- Holds installed **NVIDIA / CUDA / fabricmanager / DCGM** packages during cleanup (configurable)
-- Status of `nvidia-fabricmanager`, `nvidia-persistenced`, `nvidia-dcgm` when installed
-- Optional **DCGM** discovery (`dcgmi`) and **InfiniBand** peek (`ibstat` / `ibv_devinfo`)
-- **Docker prune** modes for training image cache (`dangling` default — safe)
-- **Firmware updates off by default** (`SKIP_FIRMWARE=true`) — prefer NVIDIA / BCM maintenance windows on SuperPOD
+**AI / GPU blade extras:**
+- Detects generic GPU/appliance hosts (DMI, device nodes, optional vendor CLIs)
+- **GPU health report** when a vendor tool is present (inventory, driver, utilization, busy processes)
+- Blocks auto-reboot while GPU compute processes are active
+- Holds common **GPU/accelerator packages** during cleanup (configurable; multi-vendor patterns)
+- Optional status of fabric/persistence/manager units when installed
+- InfiniBand / RDMA peek when tools are present
+- **Docker prune** modes for container image cache (`dangling` default — safe)
+- **Firmware updates off by default** (`SKIP_FIRMWARE=true`) — prefer site/vendor maintenance procedures on managed fleets
 - Low-space warning on `/var` (container image volume)
+- Console verbosity control (`--quiet` / `--verbose` / `--console-lines`)
 
 ### Usage
 
@@ -52,20 +55,20 @@ sudo ./update-clean.sh --no-kernel
 sudo ./update-clean.sh --keep-kernels 3
 sudo ./update-clean.sh --no-gpu-check
 sudo ./update-clean.sh --with-firmware         # enable fwupd (off by default)
-sudo ./update-clean.sh --no-hold-nvidia
+sudo ./update-clean.sh --no-hold-gpu
 sudo ./update-clean.sh --docker-prune dangling # none|dangling|unused|all
 sudo ./update-clean.sh --reboot-if-required    # still blocked if GPUs busy
+sudo ./update-clean.sh --quiet
+sudo ./update-clean.sh --verbose
+sudo ./update-clean.sh --console-lines 40
 sudo ./update-clean.sh --offline
 sudo ./update-clean.sh --last
 sudo ./update-clean.sh --debug
-sudo ./update-clean.sh --quiet              # less console noise
-sudo ./update-clean.sh --verbose            # full apt dumps on console
-sudo ./update-clean.sh --console-lines 40
 ```
 
 **Dry-run:** skips `apt-get update` and logs planned `apt-get` commands. It may still use the network for read-only listings.
 
-**SuperPOD tip:** drain workloads (or cordon/drain the node) first, then run during a maintenance window. Prefer **not** using `--reboot-if-required` on multi-tenant blades unless orchestration has already drained GPUs.
+**Fleet tip:** drain workloads (or cordon/drain the node) first, then run during a maintenance window. Prefer **not** using `--reboot-if-required` on multi-tenant blades unless orchestration has already drained GPUs.
 
 Run periodically (recommended weekly), coordinated with cluster job schedules.
 
@@ -77,17 +80,19 @@ Optional config files (sourced in order if present):
 - When run as root: `/root/.config/update-clean.conf`, `/root/.update-clean.conf`
 - When run via `sudo`: also the invoking user's `~/.config/update-clean.conf` and `~/.update-clean.conf`
 
-Example for a SuperPOD compute blade:
+Example for a GPU compute blade:
 
 ```bash
 LOG_RETENTION=10
 KERNEL_KEEP=2
 SKIP_FIRMWARE=true
-HOLD_NVIDIA=true
+HOLD_GPU=true
 DOCKER_PRUNE=dangling
+VERBOSITY=normal
+CONSOLE_APT_MAX_LINES=80
 BACKUP_MODE=false
 REBOOT_IF_REQUIRED=false
-ADMIN_EMAIL=hpc-ops@example.com
+ADMIN_EMAIL=ops@example.com
 CRITICAL_PACKAGES=(base-files base-passwd bash coreutils util-linux)
 ```
 
@@ -97,8 +102,8 @@ CRITICAL_PACKAGES=(base-files base-passwd bash coreutils util-linux)
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
-| `SKIP_FIRMWARE` | `true` | Skip `fwupd` (use NVIDIA/BCM workflows instead) |
-| `HOLD_NVIDIA` | `true` | `apt-mark hold` NVIDIA/CUDA-related packages during cleanup |
+| `SKIP_FIRMWARE` | `true` | Skip `fwupd` (use site/vendor firmware workflows instead) |
+| `HOLD_GPU` | `true` | `apt-mark hold` GPU/accelerator packages during cleanup |
 | `DOCKER_PRUNE` | `dangling` | `none` / `dangling` / `unused` / `all` |
 | `JOURNAL_VACUUM_TIME` | `30d` | Passed to `journalctl --vacuum-time` |
 | `VERBOSITY` | `normal` | `quiet` / `normal` / `verbose` console noise |
@@ -108,7 +113,7 @@ CRITICAL_PACKAGES=(base-files base-passwd bash coreutils util-linux)
 | `KERNEL_KEEP` | `2` | Extra kernels kept besides the running one |
 | `REBOOT_IF_REQUIRED` | `false` | Auto-reboot; blocked if GPU compute jobs are active |
 
-**last-run.json** includes `schema_version` (currently `1`) plus driver/GPU fields for fleet scrapers.
+**last-run.json** includes `schema_version` (currently `2`) plus GPU fields for fleet scrapers (`gpu_driver`, `gpu_runtime`, counts).
 
 ### Logging & Records
 
@@ -119,11 +124,11 @@ CRITICAL_PACKAGES=(base-files base-passwd bash coreutils util-linux)
 
 ### Safety
 
-- Must run as root
+- Must run as root (except `--gpu-only` / `--check` / `--version`)
 - Requires at least 2 GB free on `/`, `/var`, `/boot`
 - Warns if `/var` has less than 10 GB free (typical for container hosts)
 - Keeps current + previous kernel as fallback
-- Holds NVIDIA stack during autoremove/purge by default
+- Holds GPU stack during autoremove/purge by default
 - Non-critical steps do not stop the script
 - Auto-reboot refuses to run while GPU compute processes are active
 
@@ -144,7 +149,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now update-clean.timer
 ```
 
-On SuperPOD, prefer fleet orchestration (Base Command Manager, Ansible, etc.) over unattended reboots.
+On multi-node fleets, prefer cluster orchestration (cmsh/pdsh, Ansible, etc.) over unattended reboots.
 
 ## Fleet (multi-node)
 
@@ -172,25 +177,25 @@ Per-run logs and `summary.tsv` land in `fleet-runs/<timestamp>/` (gitignored).
 
 Drain modes: `skip` (default), `wait`, `force`.
 
-## Base Command Manager (BCM)
+## Cluster manager hooks (cmsh / pdsh)
 
-On SuperPOD head nodes with **BCM** (`cmsh` / `pdsh`):
+Optional helpers for sites that use **Bright-style `cmsh`** / **`pdsh`** (or compatible cluster managers):
 
 ```bash
 # List category nodes
 ./bcm/bcm-hooks.sh list-category gpu
 
-# Start maintenance: close devices + WLM drain (Slurm via cmsh or scontrol)
+# Start maintenance: close devices + WLM drain when available
 ./bcm/bcm-hooks.sh maintenance gpu "weekly update-clean" start
 
-# Fleet update using BCM inventory
+# Fleet update using category inventory
 ./fleet/update-clean-fleet.sh --from-bcm-category gpu --deploy --parallel 4 --drain-mode skip --
 
 # End maintenance
 ./bcm/bcm-hooks.sh maintenance gpu end
 ```
 
-See `bcm/cmsh-maintenance.example` for raw `cmsh` notes. Site-specific overrides:
+See `bcm/cmsh-maintenance.example` for annotated `cmsh` notes. Site-specific overrides:
 
 | Env | Default | Purpose |
 |-----|---------|---------|
@@ -198,6 +203,8 @@ See `bcm/cmsh-maintenance.example` for raw `cmsh` notes. Site-specific overrides
 | `BCM_WLM_USE` | `wlm; use slurm` | cmsh WLM preamble (empty = skip WLM) |
 | `BCM_DEVICE_CLOSED_STATUS` | `closed` | Device status while drained |
 | `BCM_DEVICE_OPEN_STATUS` | `ok` | Device status after undrain |
+
+These helpers are optional and not tied to any particular product brand.
 
 ## Ansible (optional)
 
@@ -213,12 +220,11 @@ Busy nodes are skipped when `skip_if_gpu_busy=true` (default).
 
 ### Supported systems
 
-- **NVIDIA DGX** (DGX OS — Ubuntu-based)
-- **HGX / multi-GPU** Ubuntu blades
-- **SuperPOD** compute nodes running Ubuntu
-- Standard Ubuntu LTS GPU servers (and other apt derivatives)
+- Ubuntu LTS (and interim) GPU servers
+- Other apt-based Debian derivatives used as AI/ML compute hosts
+- Multi-GPU rack blades where Ubuntu is the OS
 
-Not a replacement for NVIDIA’s official upgrade paths for DGX OS major versions or SuperPOD fabric firmware. Use this for **host package hygiene** and **visibility** between vendor maintenance windows.
+Not a replacement for vendor OS major upgrades or fabric/firmware procedures. Use this for **host package hygiene** and **visibility** between site maintenance windows.
 
 ### Relation to other repos
 
@@ -226,7 +232,7 @@ Not a replacement for NVIDIA’s official upgrade paths for DGX OS major version
 |------|--------|
 | `update_clean` | Kali |
 | `debian_ubuntu_update_clean` | General Debian/Ubuntu |
-| **`ai_blade_ubuntu_update_clean`** | Ubuntu AI blades / SuperPOD |
+| **`ai_blade_ubuntu_update_clean`** | Ubuntu AI / GPU blades |
 
 ### Versioning
 
@@ -242,7 +248,7 @@ VERSION / CHANGELOG.md / README.md / LICENSE
 update-clean.conf.example
 systemd/                 # optional weekly timer (single node)
 fleet/                   # multi-node SSH runner + hosts.example
-bcm/                     # Base Command Manager hooks + cmsh examples
+bcm/                     # optional cmsh/pdsh cluster hooks
 ansible/                 # optional playbook + inventory example
 .github/workflows/       # CI (ShellCheck)
 ```

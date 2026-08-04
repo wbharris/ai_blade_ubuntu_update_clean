@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# AI Blade / SuperPOD (Ubuntu) - Update & Cleanup Script
-# Full system update + thorough cleanup for NVIDIA AI compute blades
-# (DGX, HGX, SuperPOD nodes, and other Ubuntu GPU servers).
+# AI / GPU blade (Ubuntu) - Update & Cleanup Script
+# Full system update + thorough cleanup for Ubuntu GPU / AI compute hosts
+# (rack blades, multi-GPU servers, and other apt-based GPU nodes).
 #
-# Derived from debian_ubuntu_update_clean with AI-platform awareness.
+# Derived from debian_ubuntu_update_clean with GPU/AI-host awareness.
 #
 # Copyright (C) 2026 wbharris
 #
@@ -23,16 +23,17 @@
 # Requirements:
 #   - Bash 4+ (mapfile, ${var,,}, associative arrays)
 #   - Root for full update path (sudo); --gpu-only works unprivileged with reduced detail
-#   - apt-based Ubuntu/Debian (DGX OS, HGX blades, SuperPOD nodes)
+#   - apt-based Ubuntu/Debian (GPU servers and AI compute blades)
 #   - Required commands: apt-get, dpkg, awk, sed, grep, tar, mktemp, flock
-#   - Optional: nvidia-smi, jq, docker, fwupdmgr, curl/wget, fuser/lsof, logger
+#   - Optional: GPU vendor CLIs (e.g. nvidia-smi when installed), jq, docker,
+#     fwupdmgr, curl/wget, fuser/lsof, logger
 # Config: /etc/update-clean.conf, root or SUDO_USER home configs (see README)
 # Logs: /var/log/update-clean/ (retention via LOG_RETENTION); mode 0600
 # Exit codes: 0 = success; 1 = one or more failures (count in FAILURES / EXIT_CODE)
-# last-run.json schema_version: 1 (stable fields; see write_last_run_json)
+# last-run.json schema_version: 2 (stable fields; see write_last_run_json)
 #
 # Usage: sudo ./update-clean.sh [--dry-run] [--no-kernel] [--help] [--version]
-# Recommended: run weekly during maintenance windows on SuperPOD blades
+# Recommended: run weekly during maintenance windows on GPU/AI blades
 
 set -euo pipefail
 set -o errtrace
@@ -63,7 +64,8 @@ DEBUG=false
 SKIP_CONNECTIVITY=false
 SKIP_GPU_CHECK=false
 SKIP_FIRMWARE=${SKIP_FIRMWARE:-true}   # safer default on AI blades (use vendor tooling)
-HOLD_NVIDIA=${HOLD_NVIDIA:-true}
+# Hold installed GPU/accelerator vendor packages during cleanup (when present)
+HOLD_GPU=${HOLD_GPU:-${HOLD_NVIDIA:-true}}  # HOLD_NVIDIA is a deprecated alias
 DOCKER_PRUNE=${DOCKER_PRUNE:-dangling} # none|dangling|unused
 GPU_ONLY=false
 # quiet | normal | verbose — console noise vs full apt dumps
@@ -80,13 +82,13 @@ KERNEL_META_EXCLUDE_REGEX=${KERNEL_META_EXCLUDE_REGEX:-'linux-image-(generic|gen
 # journalctl --vacuum-time value (e.g. 30d, 14d, 1week)
 JOURNAL_VACUUM_TIME=${JOURNAL_VACUUM_TIME:-30d}
 # last-run.json schema (bump when removing/renaming fields)
-readonly LAST_RUN_JSON_SCHEMA=1
+readonly LAST_RUN_JSON_SCHEMA=2
 BACKUP_MODE=${BACKUP_MODE:-false}
 REBOOT_IF_REQUIRED=${REBOOT_IF_REQUIRED:-false}
 LOG_DIR="${LOG_DIR:-/var/log/update-clean}"
 LOCKFILE="${LOCKFILE:-/run/update-clean.lock}"
 LAST_RUN_DIR="${LAST_RUN_DIR:-/var/lib/update-clean}"
-# Base OS packages always held; NVIDIA packages held dynamically when HOLD_NVIDIA=true
+# Base OS packages always held; GPU vendor packages held dynamically when HOLD_GPU=true
 CRITICAL_PACKAGES=(base-files base-passwd bash coreutils util-linux)
 readonly SCRIPT_NAME="update-clean"
 SCRIPT_VERSION=$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo "unknown")
@@ -98,8 +100,8 @@ AI_PLATFORM_DETAIL=""
 GPU_COUNT=0
 GPU_BUSY=false
 GPU_PROCESS_COUNT=0
-NVIDIA_DRIVER=""
-CUDA_VERSION=""
+GPU_DRIVER=""
+GPU_RUNTIME=""   # e.g. CUDA version string when a vendor tool reports it
 
 # Thresholds and retry limits (override via env if needed)
 readonly MIN_DISK_KB=${MIN_DISK_KB:-2097152}       # 2 GB root/var/boot
@@ -121,7 +123,7 @@ CLI_REBOOT_IF_REQUIRED=false
 CLI_DEBUG=false
 CLI_SKIP_GPU_CHECK=false
 CLI_SKIP_FIRMWARE=""
-CLI_HOLD_NVIDIA=""
+CLI_HOLD_GPU=""
 CLI_DOCKER_PRUNE=""
 CLI_GPU_ONLY=false
 CLI_VERBOSITY=""
@@ -225,11 +227,15 @@ validate_config_values() {
             SKIP_FIRMWARE=true
             ;;
     esac
-    case "${HOLD_NVIDIA,,}" in
+    # Accept deprecated HOLD_NVIDIA if HOLD_GPU unset from config after source
+    if [ -n "${HOLD_NVIDIA:-}" ] && [ -z "${CLI_HOLD_GPU:-}" ]; then
+        : "${HOLD_GPU:=$HOLD_NVIDIA}"
+    fi
+    case "${HOLD_GPU,,}" in
         true|false|yes|no|1|0) ;;
         *)
-            warn "Invalid HOLD_NVIDIA='$HOLD_NVIDIA', using true"
-            HOLD_NVIDIA=true
+            warn "Invalid HOLD_GPU='$HOLD_GPU', using true"
+            HOLD_GPU=true
             ;;
     esac
     case "${VERBOSITY,,}" in
@@ -272,7 +278,7 @@ apply_cli_config_overrides() {
     $CLI_SKIP_GPU_CHECK && SKIP_GPU_CHECK=true
     $CLI_GPU_ONLY && GPU_ONLY=true
     [ -n "$CLI_SKIP_FIRMWARE" ] && SKIP_FIRMWARE="$CLI_SKIP_FIRMWARE"
-    [ -n "$CLI_HOLD_NVIDIA" ] && HOLD_NVIDIA="$CLI_HOLD_NVIDIA"
+    [ -n "$CLI_HOLD_GPU" ] && HOLD_GPU="$CLI_HOLD_GPU"
     [ -n "$CLI_DOCKER_PRUNE" ] && DOCKER_PRUNE="$CLI_DOCKER_PRUNE"
     [ -n "$CLI_VERBOSITY" ] && VERBOSITY="$CLI_VERBOSITY"
     [ -n "$CLI_CONSOLE_APT_MAX_LINES" ] && CONSOLE_APT_MAX_LINES="$CLI_CONSOLE_APT_MAX_LINES"
@@ -360,8 +366,8 @@ dump_debug_state() {
         "${LOG_DIR:-<unset>}" "${LOG_FILE:-<unset>}" "${APT_LOG:-<unset>}"
     printf '  DISTRO=%s ARCHIVE_HOST=%s SKIP_CONNECTIVITY=%s\n' \
         "${DISTRO_NAME:-<unset>}" "${ARCHIVE_HOST:-<unset>}" "${SKIP_CONNECTIVITY:-}"
-    printf '  AI_PLATFORM=%s SKIP_FIRMWARE=%s HOLD_NVIDIA=%s DOCKER_PRUNE=%s\n' \
-        "${AI_PLATFORM:-}" "${SKIP_FIRMWARE:-}" "${HOLD_NVIDIA:-}" "${DOCKER_PRUNE:-}"
+    printf '  AI_PLATFORM=%s SKIP_FIRMWARE=%s HOLD_GPU=%s DOCKER_PRUNE=%s\n' \
+        "${AI_PLATFORM:-}" "${SKIP_FIRMWARE:-}" "${HOLD_GPU:-}" "${DOCKER_PRUNE:-}"
     printf '  VERBOSITY=%s CONSOLE_APT_MAX_LINES=%s\n' \
         "${VERBOSITY:-}" "${CONSOLE_APT_MAX_LINES:-}"
 }
@@ -522,17 +528,18 @@ detect_distro() {
 
 
 # ────────────────────────────────────────────────────────────────
-# AI blade / SuperPOD platform detection & GPU health
+# AI / GPU host detection & health (vendor tools when present)
 # ────────────────────────────────────────────────────────────────
 detect_ai_platform() {
     AI_PLATFORM="generic-ubuntu"
     AI_PLATFORM_DETAIL=""
-    local product="" board="" dgx_ver=""
+    local product="" board="" appliance=""
 
+    # Optional appliance release file (vendor-specific OS images)
     if [ -f /etc/dgx-release ]; then
-        AI_PLATFORM="dgx"
-        dgx_ver=$(grep -E '^DGX_SWBUILD_VERSION|^DGX_OTA_VERSION|^DGX_NAME' /etc/dgx-release 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]*$//')
-        AI_PLATFORM_DETAIL="${dgx_ver:-DGX OS}"
+        AI_PLATFORM="gpu-appliance"
+        appliance=$(grep -E '^[A-Z0-9_]+=' /etc/dgx-release 2>/dev/null | head -n 5 | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+        AI_PLATFORM_DETAIL="${appliance:-gpu appliance OS}"
     fi
 
     if has_cmd dmidecode; then
@@ -546,52 +553,76 @@ detect_ai_platform() {
     local blob
     blob=$(printf '%s %s %s' "$product" "$board" "$AI_PLATFORM_DETAIL" | tr '[:upper:]' '[:lower:]')
 
-    if [[ "$blob" == *superpod* ]] || [[ "$blob" == *super-pod* ]]; then
-        AI_PLATFORM="superpod"
-        AI_PLATFORM_DETAIL="${product:-SuperPOD} ${board}"
-    elif [[ "$blob" == *dgx* ]]; then
-        AI_PLATFORM="dgx"
-        AI_PLATFORM_DETAIL="${AI_PLATFORM_DETAIL:-$product}"
-    elif [[ "$blob" == *hgx* ]] || [[ "$blob" == *grace* ]] || [[ "$blob" == *hopper* ]] || [[ "$blob" == *blackwell* ]]; then
-        AI_PLATFORM="hgx"
-        AI_PLATFORM_DETAIL="${product:-HGX} ${board}"
-    elif has_cmd nvidia-smi || [ -e /dev/nvidia0 ] || [ -d /sys/module/nvidia ]; then
+    if [[ "$blob" == *gpu* ]] || [[ "$blob" == *accelerator* ]] || [[ "$blob" == *ai-* ]] || [[ "$blob" == *" ai "* ]]; then
         if [ "$AI_PLATFORM" = "generic-ubuntu" ]; then
-            AI_PLATFORM="nvidia-gpu"
-            AI_PLATFORM_DETAIL="${product:-NVIDIA GPU host}"
+            AI_PLATFORM="gpu-server"
+            AI_PLATFORM_DETAIL="${product:-GPU server} ${board}"
+        fi
+    fi
+
+    # Detect common GPU device nodes / vendor CLIs without branding the product
+    if has_cmd nvidia-smi || [ -e /dev/nvidia0 ] || [ -d /sys/module/nvidia ]; then
+        if [ "$AI_PLATFORM" = "generic-ubuntu" ] || [ "$AI_PLATFORM" = "gpu-server" ]; then
+            AI_PLATFORM="gpu-host"
+            AI_PLATFORM_DETAIL="${product:-GPU host} ${board}"
+        fi
+    elif has_cmd rocm-smi || [ -e /dev/kfd ] || [ -d /sys/module/amdgpu ]; then
+        if [ "$AI_PLATFORM" = "generic-ubuntu" ]; then
+            AI_PLATFORM="gpu-host"
+            AI_PLATFORM_DETAIL="${product:-GPU host (ROCm)} ${board}"
+        fi
+    elif has_cmd xpu-smi || has_cmd sycl-ls; then
+        if [ "$AI_PLATFORM" = "generic-ubuntu" ]; then
+            AI_PLATFORM="gpu-host"
+            AI_PLATFORM_DETAIL="${product:-GPU/accelerator host} ${board}"
         fi
     fi
 
     AI_PLATFORM_DETAIL=$(printf '%s' "$AI_PLATFORM_DETAIL" | sed 's/[[:space:]]*$//')
 }
 
-query_nvidia_driver() {
-    NVIDIA_DRIVER=""
-    CUDA_VERSION=""
+query_gpu_driver() {
+    GPU_DRIVER=""
+    GPU_RUNTIME=""
     GPU_COUNT=0
 
-    if ! has_cmd nvidia-smi; then
-        return 1
+    # Prefer whatever vendor CLI is installed (order is opportunistic)
+    if has_cmd nvidia-smi; then
+        GPU_DRIVER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -n1 | tr -d '[:space:]' || true)
+        GPU_RUNTIME=$(nvidia-smi 2>/dev/null | awk -F'CUDA Version: ' '/CUDA Version:/ {print $2}' | awk '{print $1}' | head -n1 || true)
+        GPU_COUNT=$(nvidia-smi -L 2>/dev/null | grep -c '^GPU ' || true)
+        GPU_COUNT=${GPU_COUNT:-0}
+        return 0
     fi
 
-    NVIDIA_DRIVER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -n1 | tr -d '[:space:]' || true)
-    CUDA_VERSION=$(nvidia-smi 2>/dev/null | awk -F'CUDA Version: ' '/CUDA Version:/ {print $2}' | awk '{print $1}' | head -n1 || true)
-    GPU_COUNT=$(nvidia-smi -L 2>/dev/null | grep -c '^GPU ' || true)
-    GPU_COUNT=${GPU_COUNT:-0}
-    return 0
+    if has_cmd rocm-smi; then
+        GPU_DRIVER=$(rocm-smi --showdriverversion 2>/dev/null | awk -F: '/Driver/{print $2; exit}' | tr -d '[:space:]' || true)
+        GPU_COUNT=$(rocm-smi -i 2>/dev/null | grep -cE 'GPU\[|Device' || true)
+        GPU_COUNT=${GPU_COUNT:-0}
+        return 0
+    fi
+
+    return 1
 }
+
+# Backward-compatible alias
+query_nvidia_driver() { query_gpu_driver; }
 
 count_gpu_compute_processes() {
     GPU_PROCESS_COUNT=0
     GPU_BUSY=false
 
-    if ! has_cmd nvidia-smi; then
+    local apps=""
+
+    if has_cmd nvidia-smi; then
+        apps=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null | sed '/^[[:space:]]*$/d' | wc -l || true)
+    elif has_cmd rocm-smi; then
+        # Best-effort: count non-header process lines if supported
+        apps=$(rocm-smi --showpids 2>/dev/null | grep -cE '^[0-9]' || true)
+    else
         return 0
     fi
 
-    # Prefer compute-apps query; fall back to pmon-style parse
-    local apps
-    apps=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null | sed '/^[[:space:]]*$/d' | wc -l || true)
     apps=${apps// /}
     if [[ "$apps" =~ ^[0-9]+$ ]]; then
         GPU_PROCESS_COUNT=$apps
@@ -605,28 +636,22 @@ count_gpu_compute_processes() {
 }
 
 report_gpu_health() {
-    info "=== AI blade / GPU health ==="
+    info "=== AI / GPU host health ==="
     info "Platform: $AI_PLATFORM${AI_PLATFORM_DETAIL:+ ($AI_PLATFORM_DETAIL)}"
 
-    if ! has_cmd nvidia-smi; then
-        warn "nvidia-smi not found — no NVIDIA driver tooling on PATH"
-        if [ -e /dev/nvidia0 ]; then
-            warn "/dev/nvidia0 exists but nvidia-smi missing (broken driver install?)"
+    if ! query_gpu_driver; then
+        warn "No GPU vendor query tool found (e.g. nvidia-smi, rocm-smi) — skipping GPU inventory"
+        if [ -e /dev/nvidia0 ] || [ -e /dev/kfd ]; then
+            warn "GPU device node present but vendor CLI missing (incomplete driver install?)"
         fi
         return 0
     fi
 
-    if ! query_nvidia_driver; then
-        warn "nvidia-smi present but failed to query GPUs"
-        _record_failure
-        return 1
-    fi
-
-    info "NVIDIA driver: ${NVIDIA_DRIVER:-unknown}"
-    info "CUDA (reported by driver): ${CUDA_VERSION:-unknown}"
+    info "GPU driver: ${GPU_DRIVER:-unknown}"
+    [ -n "$GPU_RUNTIME" ] && info "GPU runtime (vendor-reported): $GPU_RUNTIME"
     info "GPU count: $GPU_COUNT"
 
-    if [ "$GPU_COUNT" -gt 0 ]; then
+    if has_cmd nvidia-smi && [ "$GPU_COUNT" -gt 0 ]; then
         info "GPU inventory:"
         nvidia-smi -L 2>/dev/null | while IFS= read -r line; do
             info "  $line"
@@ -637,48 +662,45 @@ report_gpu_health() {
             --format=csv 2>/dev/null | while IFS= read -r line; do
             info "  $line"
         done || true
+    elif has_cmd rocm-smi; then
+        info "GPU inventory (rocm-smi):"
+        rocm-smi 2>/dev/null | head -n 40 | while IFS= read -r line; do
+            info "  $line"
+        done || true
     fi
 
     count_gpu_compute_processes
     if $GPU_BUSY; then
-        warn "GPU compute processes active: $GPU_PROCESS_COUNT (training/inference in progress)"
-        nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory \
-            --format=csv 2>/dev/null | while IFS= read -r line; do
-            warn "  $line"
-        done || true
+        warn "GPU compute processes active: $GPU_PROCESS_COUNT (workloads in progress)"
+        if has_cmd nvidia-smi; then
+            nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory \
+                --format=csv 2>/dev/null | while IFS= read -r line; do
+                warn "  $line"
+            done || true
+        fi
     else
         success "No active GPU compute processes detected"
     fi
 
-    # Fabric Manager (NVSwitch / multi-GPU HGX / SuperPOD blades)
+    # Multi-GPU fabric / persistence helpers when installed (names are package units)
     if has_cmd systemctl; then
-        if systemctl list-unit-files nvidia-fabricmanager.service >/dev/null 2>&1 \
-            || systemctl status nvidia-fabricmanager >/dev/null 2>&1; then
-            local fm
-            fm=$(systemctl is-active nvidia-fabricmanager 2>/dev/null || echo "unknown")
-            info "nvidia-fabricmanager: $fm"
-            if [ "$fm" != "active" ] && [ "$GPU_COUNT" -gt 1 ]; then
-                warn "Fabric Manager not active on multi-GPU node — NVLink/NVSwitch fabric may be degraded"
+        local unit
+        for unit in nvidia-fabricmanager nvidia-persistenced nvidia-dcgm amdgpu-modprobe; do
+            if systemctl list-unit-files "${unit}.service" >/dev/null 2>&1 \
+                || systemctl status "$unit" >/dev/null 2>&1; then
+                info "${unit}: $(systemctl is-active "$unit" 2>/dev/null || echo unknown)"
             fi
-        fi
-        if systemctl list-unit-files nvidia-persistenced.service >/dev/null 2>&1 \
-            || systemctl status nvidia-persistenced >/dev/null 2>&1; then
-            info "nvidia-persistenced: $(systemctl is-active nvidia-persistenced 2>/dev/null || echo unknown)"
-        fi
-        if systemctl list-unit-files nvidia-dcgm.service >/dev/null 2>&1 \
-            || systemctl status nvidia-dcgm >/dev/null 2>&1; then
-            info "nvidia-dcgm: $(systemctl is-active nvidia-dcgm 2>/dev/null || echo unknown)"
-        fi
+        done
     fi
 
     if has_cmd dcgmi; then
-        info "DCGM discovery (short):"
+        info "GPU manager discovery (dcgmi):"
         dcgmi discovery -l 2>/dev/null | head -n 40 | while IFS= read -r line; do
             info "  $line"
         done || warn "dcgmi discovery failed"
     fi
 
-    # InfiniBand / SuperPOD fabric peek (Mellanox OFED / MLNX_OFED)
+    # High-speed interconnect peek when present
     if has_cmd ibstat; then
         info "InfiniBand adapters (ibstat summary):"
         ibstat 2>/dev/null | awk '/^CA |^[[:space:]]*State:|^[[:space:]]*Rate:|^[[:space:]]*Physical state:/ {print}' | head -n 40 | while IFS= read -r line; do
@@ -692,47 +714,53 @@ report_gpu_health() {
     fi
 
     if has_cmd nvidia-container-cli; then
-        info "NVIDIA Container Toolkit: present (nvidia-container-cli)"
+        info "GPU container toolkit: present (nvidia-container-cli)"
     elif has_cmd nvidia-ctk; then
-        info "NVIDIA Container Toolkit: present (nvidia-ctk)"
+        info "GPU container toolkit: present (nvidia-ctk)"
     fi
 
     if has_cmd docker; then
         info "Docker: $(docker --version 2>/dev/null | head -n1)"
-        if docker info 2>/dev/null | grep -qi 'Runtimes:.*nvidia\|nvidia'; then
-            info "Docker NVIDIA runtime: available"
+        if docker info 2>/dev/null | grep -qiE 'Runtimes:.*(nvidia|rocm)|nvidia|rocm'; then
+            info "Docker GPU runtime: available"
         fi
     fi
 
     info "=== End GPU health ==="
 }
 
-list_nvidia_hold_packages() {
-    # Installed packages that should not be auto-removed on AI blades
+list_gpu_hold_packages() {
+    # Installed packages that should not be auto-removed on GPU/AI blades
+    # Patterns cover common vendor stacks when present; harmless if none installed.
     dpkg-query -W -f='${Status}\t${Package}\n' \
         'nvidia-*' 'libnvidia-*' 'cuda-*' 'libcuda*' 'nsight-*' \
         'datacenter-gpu-manager*' 'fabricmanager*' 'nv-fabricmanager*' \
+        'rocm-*' 'hip-*' 'hsa-*' 'amdgpu-*' 'rock-*' \
+        'intel-level-zero*' 'level-zero*' 'intel-opencl*' \
         2>/dev/null \
         | awk -F'\t' '$1 ~ /^install ok installed/ {print $2}' \
         | sort -u
 }
 
-hold_nvidia_packages() {
+# Deprecated alias
+list_nvidia_hold_packages() { list_gpu_hold_packages; }
+
+hold_gpu_packages() {
     local -a pkgs=()
     local p
 
-    truthy "$HOLD_NVIDIA" || {
-        info "HOLD_NVIDIA disabled — not holding NVIDIA packages"
+    truthy "$HOLD_GPU" || {
+        info "HOLD_GPU disabled — not holding GPU vendor packages"
         return 0
     }
 
-    mapfile -t pkgs < <(list_nvidia_hold_packages)
+    mapfile -t pkgs < <(list_gpu_hold_packages)
     if [ "${#pkgs[@]}" -eq 0 ]; then
-        info "No NVIDIA/CUDA packages found to hold"
+        info "No GPU/accelerator packages found to hold"
         return 0
     fi
 
-    info "Holding ${#pkgs[@]} NVIDIA/CUDA-related package(s) during cleanup..."
+    info "Holding ${#pkgs[@]} GPU/accelerator-related package(s) during cleanup..."
     if $DRY_RUN; then
         for p in "${pkgs[@]:0:15}"; do
             info "DRY-RUN: would apt-mark hold $p"
@@ -741,12 +769,14 @@ hold_nvidia_packages() {
         return 0
     fi
 
-    # apt-mark hold accepts multiple packages; batch to avoid arg limits
     local i batch=40
     for ((i = 0; i < ${#pkgs[@]}; i += batch)); do
         apt-mark hold "${pkgs[@]:i:batch}" 2>/dev/null || true
     done
 }
+
+# Deprecated alias
+hold_nvidia_packages() { hold_gpu_packages; }
 
 docker_cleanup() {
     local mode="${DOCKER_PRUNE,,}"
@@ -837,8 +867,8 @@ write_last_run_json() {
             version: $v,
             distro: $d,
             ai_platform: $platform,
-            nvidia_driver: $driver,
-            cuda_version: $cuda,
+            gpu_driver: $driver,
+            gpu_runtime: $cuda,
             gpu_count: $gpus,
             gpu_process_count: $busy_procs,
             timestamp: $t,
@@ -1349,12 +1379,13 @@ Options:
   --keep-kernels N  Keep N kernels besides running (default: 2; 0 = only running)
   --reboot-if-required  Reboot automatically when required (blocked if GPUs busy)
   --offline         Skip internet connectivity checks
-  --no-gpu-check    Skip NVIDIA GPU health / busy checks
-  --gpu-only        Report AI blade / GPU health only, then exit
+  --no-gpu-check    Skip GPU health / busy checks
+  --gpu-only        Report AI/GPU host health only, then exit
                     (works without root; systemctl/dmidecode detail may be limited)
   --no-firmware     Skip fwupd firmware updates (default on AI blades)
   --with-firmware   Allow fwupd firmware updates
-  --no-hold-nvidia  Do not apt-mark hold NVIDIA/CUDA packages during cleanup
+  --no-hold-gpu     Do not apt-mark hold GPU vendor packages during cleanup
+  --no-hold-nvidia  Deprecated alias for --no-hold-gpu
   --docker-prune MODE  none|dangling|unused|all (default: dangling)
   --last, --status  Show information from the last run
   --check, --doctor Run pre-flight checks only (no updates)
@@ -1376,7 +1407,8 @@ Environment / Config:
   BACKUP_MODE       Backup /etc before purging configs (default: false)
   REBOOT_IF_REQUIRED Reboot automatically if required (default: false)
   SKIP_FIRMWARE     Skip fwupd (default: true on AI blades)
-  HOLD_NVIDIA       Hold NVIDIA/CUDA packages during cleanup (default: true)
+  HOLD_GPU          Hold GPU vendor packages during cleanup (default: true)
+  HOLD_NVIDIA       Deprecated alias for HOLD_GPU
   DOCKER_PRUNE      none|dangling|unused|all (default: dangling)
   JOURNAL_VACUUM_TIME  journalctl --vacuum-time value (default: 30d)
   VERBOSITY         quiet|normal|verbose (default: normal)
@@ -1385,19 +1417,20 @@ Environment / Config:
   CRITICAL_PACKAGES Array of packages to hold during cleanup
 
 Target platforms:
-  NVIDIA DGX / DGX OS, HGX blades, SuperPOD compute nodes, Ubuntu GPU servers
+  Ubuntu GPU servers, AI/ML compute blades, multi-GPU rack nodes (vendor-agnostic)
 USAGE
 }
 
 show_version() {
     detect_distro
     detect_ai_platform
-    query_nvidia_driver || true
+    query_gpu_driver || true
     printf '%s %s\n' "$SCRIPT_NAME" "$SCRIPT_VERSION"
     printf 'Distro: %s\n' "$DISTRO_NAME"
     printf 'AI platform: %s%s\n' "$AI_PLATFORM" "${AI_PLATFORM_DETAIL:+ ($AI_PLATFORM_DETAIL)}"
-    if [ -n "$NVIDIA_DRIVER" ]; then
-        printf 'NVIDIA driver: %s  CUDA: %s  GPUs: %s\n'             "$NVIDIA_DRIVER" "${CUDA_VERSION:-?}" "$GPU_COUNT"
+    if [ -n "$GPU_DRIVER" ]; then
+        printf 'GPU driver: %s  runtime: %s  GPUs: %s\n' \
+            "$GPU_DRIVER" "${GPU_RUNTIME:-?}" "$GPU_COUNT"
     fi
 
     if [ -d "$SCRIPT_DIR/.git" ]; then
@@ -1488,19 +1521,20 @@ run_preflight_checks() {
 
     detect_ai_platform
     printf 'AI platform: %s%s\n' "$AI_PLATFORM" "${AI_PLATFORM_DETAIL:+ ($AI_PLATFORM_DETAIL)}"
-    printf 'nvidia-smi: '
-    if has_cmd nvidia-smi; then
+    printf 'GPU tooling: '
+    if has_cmd nvidia-smi || has_cmd rocm-smi; then
         printf 'OK\n'
-        query_nvidia_driver || true
+        query_gpu_driver || true
         count_gpu_compute_processes
-        printf 'Driver: %s  CUDA: %s  GPUs: %s  Busy procs: %s\n'             "${NVIDIA_DRIVER:-?}" "${CUDA_VERSION:-?}" "$GPU_COUNT" "$GPU_PROCESS_COUNT"
+        printf 'Driver: %s  runtime: %s  GPUs: %s  Busy procs: %s\n' \
+            "${GPU_DRIVER:-?}" "${GPU_RUNTIME:-?}" "$GPU_COUNT" "$GPU_PROCESS_COUNT"
     else
-        printf 'MISSING\n'
+        printf 'none detected\n'
     fi
     printf 'Docker: '
     if has_cmd docker; then printf '%s\n' "present"; else printf '%s\n' "not installed"; fi
-    printf 'SKIP_FIRMWARE: %s  HOLD_NVIDIA: %s  DOCKER_PRUNE: %s\n' \
-        "$SKIP_FIRMWARE" "$HOLD_NVIDIA" "$DOCKER_PRUNE"
+    printf 'SKIP_FIRMWARE: %s  HOLD_GPU: %s  DOCKER_PRUNE: %s\n' \
+        "$SKIP_FIRMWARE" "$HOLD_GPU" "$DOCKER_PRUNE"
     printf 'VERBOSITY: %s  CONSOLE_APT_MAX_LINES: %s  JOURNAL_VACUUM_TIME: %s\n' \
         "$VERBOSITY" "$CONSOLE_APT_MAX_LINES" "$JOURNAL_VACUUM_TIME"
 
@@ -1600,9 +1634,9 @@ while [[ $# -gt 0 ]]; do
             CLI_SKIP_FIRMWARE=false
             shift
             ;;
-        --no-hold-nvidia)
-            HOLD_NVIDIA=false
-            CLI_HOLD_NVIDIA=false
+        --no-hold-gpu|--no-hold-nvidia)
+            HOLD_GPU=false
+            CLI_HOLD_GPU=false
             shift
             ;;
         --docker-prune)
@@ -1651,7 +1685,7 @@ fi
 if $GPU_ONLY; then
     # Health-only path: no root required for most queries; some detail needs root
     if [ "$EUID" -ne 0 ]; then
-        info "GPU-only mode (non-root) — nvidia-smi works; dmidecode/systemctl may be limited"
+        info "GPU-only mode (non-root) — vendor GPU CLI works; dmidecode/systemctl may be limited"
     else
         info "GPU-only mode — reporting AI blade health and exiting"
     fi
@@ -1735,7 +1769,7 @@ if ! $SKIP_GPU_CHECK; then
     report_gpu_health || true
     if $GPU_BUSY; then
         warn "GPUs are busy — updates will proceed, but reboot will be blocked if requested"
-        warn "Prefer draining jobs before SuperPOD blade maintenance"
+        warn "Prefer draining jobs before multi-tenant blade maintenance"
     fi
 else
     info "Skipping GPU health checks (--no-gpu-check)"
@@ -1852,7 +1886,7 @@ apt_run full-upgrade || warn "full-upgrade had issues"
 # ────────────────────────────────────────────────────────────────
 info "Holding critical packages to prevent accidental removal..."
 hold_critical_packages
-hold_nvidia_packages
+hold_gpu_packages
 
 if $DRY_RUN; then
     info "DRY-RUN: Would run autoremove, clean, purge configs, kernel removal, etc."
@@ -1912,7 +1946,7 @@ fi
 
 if truthy "$SKIP_FIRMWARE"; then
     info "Skipping fwupd firmware updates (SKIP_FIRMWARE=true; use --with-firmware to enable)"
-    info "On DGX/SuperPOD, prefer NVIDIA-documented firmware / Base Command Manager workflows"
+    info "On managed clusters, prefer vendor/cluster firmware workflows over ad-hoc fwupd"
 elif has_cmd fwupdmgr; then
     if $DRY_RUN; then
         info "DRY-RUN: Would update firmware"
@@ -2000,8 +2034,8 @@ if ! $DRY_RUN; then
 VERSION=$SCRIPT_VERSION
 DISTRO=$DISTRO_NAME
 AI_PLATFORM=$AI_PLATFORM
-NVIDIA_DRIVER=${NVIDIA_DRIVER:-}
-CUDA_VERSION=${CUDA_VERSION:-}
+GPU_DRIVER=${GPU_DRIVER:-}
+GPU_RUNTIME=${GPU_RUNTIME:-}
 GPU_COUNT=$GPU_COUNT
 GPU_BUSY=$GPU_BUSY
 GPU_PROCESS_COUNT=$GPU_PROCESS_COUNT
@@ -2018,8 +2052,8 @@ LAST
             "$SCRIPT_VERSION" \
             "$DISTRO_NAME" \
             "$AI_PLATFORM" \
-            "${NVIDIA_DRIVER:-}" \
-            "${CUDA_VERSION:-}" \
+            "${GPU_DRIVER:-}" \
+            "${GPU_RUNTIME:-}" \
             "${GPU_COUNT:-0}" \
             "${GPU_PROCESS_COUNT:-0}" \
             "$RUN_TIMESTAMP" \
@@ -2055,7 +2089,7 @@ log_to_syslog "$MSG (failures=$EXIT_CODE)"
 log "=== Update Summary ==="
 log "Distro: $DISTRO_NAME"
 log "AI platform: $AI_PLATFORM${AI_PLATFORM_DETAIL:+ ($AI_PLATFORM_DETAIL)}"
-log "NVIDIA driver: ${NVIDIA_DRIVER:-n/a}  CUDA: ${CUDA_VERSION:-n/a}  GPUs: $GPU_COUNT  busy_procs: $GPU_PROCESS_COUNT"
+log "GPU driver: ${GPU_DRIVER:-n/a}  runtime: ${GPU_RUNTIME:-n/a}  GPUs: $GPU_COUNT  busy_procs: $GPU_PROCESS_COUNT"
 log "Disk space freed (/, /var, /boot): ${FREED_MB} MB"
 log "Failures recorded: $EXIT_CODE"
 log "Full log saved to: $LOG_FILE"

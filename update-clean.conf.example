@@ -1,4 +1,4 @@
-# Optional configuration for update-clean.sh (AI blade / SuperPOD)
+# Optional configuration for update-clean.sh (AI / GPU blades)
 # Copyright (C) 2026 wbharris
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
@@ -25,12 +25,13 @@
 # Still blocked if GPU compute processes are running
 # REBOOT_IF_REQUIRED=false
 
-# Skip fwupd firmware updates (default: true on AI blades)
-# Prefer NVIDIA / Base Command Manager firmware workflows on SuperPOD
+# Skip fwupd firmware updates (default: true on AI/GPU blades)
+# Prefer site or vendor firmware workflows on managed fleets
 # SKIP_FIRMWARE=true
 
-# Hold NVIDIA/CUDA/fabric/DCGM packages during cleanup (default: true)
-# HOLD_NVIDIA=true
+# Hold GPU/accelerator packages during cleanup (default: true)
+# HOLD_GPU=true
+# HOLD_NVIDIA=true   # deprecated alias for HOLD_GPU
 
 # Docker image prune: none | dangling | unused | all (default: dangling)
 # DOCKER_PRUNE=dangling
@@ -52,7 +53,7 @@
 # APT_LOCK_POLL_SECS=5
 
 # Optional completion email (requires mail command)
-# ADMIN_EMAIL=hpc-ops@example.com
+# ADMIN_EMAIL=ops@example.com
 
 # Packages to hold during cleanup (default: base-files base-passwd bash coreutils util-linux)
 # CRITICAL_PACKAGES=(base-files base-passwd bash coreutils util-linux)

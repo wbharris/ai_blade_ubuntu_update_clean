@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 [Unit]
-Description=Weekly AI blade update and cleanup
+Description=Weekly AI/GPU blade update and cleanup
 
 [Timer]
 OnCalendar=Sun *-*-* 04:00:00
