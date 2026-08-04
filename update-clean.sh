@@ -232,6 +232,7 @@ apply_cli_config_overrides() {
     [ -n "$CLI_SKIP_FIRMWARE" ] && SKIP_FIRMWARE="$CLI_SKIP_FIRMWARE"
     [ -n "$CLI_HOLD_NVIDIA" ] && HOLD_NVIDIA="$CLI_HOLD_NVIDIA"
     [ -n "$CLI_DOCKER_PRUNE" ] && DOCKER_PRUNE="$CLI_DOCKER_PRUNE"
+    return 0
 }
 
 # ────────────────────────────────────────────────────────────────
