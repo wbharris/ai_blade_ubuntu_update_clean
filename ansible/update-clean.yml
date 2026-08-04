@@ -1,0 +1,70 @@
+---
+# Ansible playbook: deploy + run update-clean on AI blades
+# Copyright (C) 2026 wbharris
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Usage:
+#   ansible-playbook -i inventory.ini ansible/update-clean.yml
+#   ansible-playbook -i inventory.ini ansible/update-clean.yml -e dry_run=true
+#   ansible-playbook -i inventory.ini ansible/update-clean.yml -e 'extra_args=--gpu-only'
+#
+# Inventory example (inventory.ini):
+#   [gpu]
+#   node001
+#   node002
+#   [gpu:vars]
+#   ansible_user=ubuntu
+#   ansible_become=true
+
+- name: Deploy and run AI blade update-clean
+  hosts: gpu
+  gather_facts: true
+  become: true
+  vars:
+    update_clean_src: "{{ playbook_dir }}/../update-clean.sh"
+    update_clean_dest: /usr/local/sbin/update-clean.sh
+    dry_run: false
+    extra_args: ""
+    skip_if_gpu_busy: true
+
+  tasks:
+    - name: Install update-clean.sh
+      ansible.builtin.copy:
+        src: "{{ update_clean_src }}"
+        dest: "{{ update_clean_dest }}"
+        mode: "0755"
+        owner: root
+        group: root
+
+    - name: Check GPU compute process count
+      ansible.builtin.shell: |
+        if ! command -v nvidia-smi >/dev/null 2>&1; then
+          echo 0
+          exit 0
+        fi
+        nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null \
+          | sed '/^[[:space:]]*$/d' | wc -l
+      args:
+        executable: /bin/bash
+      register: gpu_busy
+      changed_when: false
+      failed_when: false
+
+    - name: Skip node when GPUs are busy
+      ansible.builtin.debug:
+        msg: "Skipping {{ inventory_hostname }} — {{ gpu_busy.stdout | trim }} GPU process(es)"
+      when:
+        - skip_if_gpu_busy | bool
+        - (gpu_busy.stdout | trim | int) > 0
+
+    - name: Run update-clean
+      ansible.builtin.command:
+        argv: "{{ ([update_clean_dest] + (extra_args.split() if extra_args else []) + (['--dry-run'] if dry_run else [])) }}"
+      register: uc_result
+      when: not (skip_if_gpu_busy | bool) or (gpu_busy.stdout | default('0') | trim | int) == 0
+      changed_when: not dry_run
+
+    - name: Show update-clean summary tail
+      ansible.builtin.debug:
+        msg: "{{ uc_result.stdout_lines | default([]) | last(30) }}"
+      when: uc_result is defined and uc_result.stdout_lines is defined

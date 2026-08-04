@@ -136,6 +136,71 @@ sudo systemctl enable --now update-clean.timer
 
 On SuperPOD, prefer fleet orchestration (Base Command Manager, Ansible, etc.) over unattended reboots.
 
+## Fleet (multi-node)
+
+**`fleet/update-clean-fleet.sh`** runs update-clean over SSH across many blades with GPU drain policy and optional parallel deploy.
+
+```bash
+# Edit inventory
+cp fleet/hosts.example fleet/hosts
+# node001 / node002 / ...
+
+# Health only
+./fleet/update-clean-fleet.sh -f fleet/hosts -- --gpu-only
+
+# Deploy script + dry-run on 4 nodes at a time; skip busy GPUs
+./fleet/update-clean-fleet.sh -f fleet/hosts --deploy --parallel 4 --drain-mode skip -- --dry-run
+
+# Wait up to 1h for GPUs to drain, then update
+./fleet/update-clean-fleet.sh -f fleet/hosts --deploy --drain-mode wait --drain-wait 3600 --
+
+# Comma list
+./fleet/update-clean-fleet.sh -H node001,node002 -u ubuntu --deploy -- --check
+```
+
+Per-run logs and `summary.tsv` land in `fleet-runs/<timestamp>/` (gitignored).
+
+Drain modes: `skip` (default), `wait`, `force`.
+
+## Base Command Manager (BCM)
+
+On SuperPOD head nodes with **BCM** (`cmsh` / `pdsh`):
+
+```bash
+# List category nodes
+./bcm/bcm-hooks.sh list-category gpu
+
+# Start maintenance: close devices + WLM drain (Slurm via cmsh or scontrol)
+./bcm/bcm-hooks.sh maintenance gpu "weekly update-clean" start
+
+# Fleet update using BCM inventory
+./fleet/update-clean-fleet.sh --from-bcm-category gpu --deploy --parallel 4 --drain-mode skip --
+
+# End maintenance
+./bcm/bcm-hooks.sh maintenance gpu end
+```
+
+See `bcm/cmsh-maintenance.example` for raw `cmsh` notes. Site-specific overrides:
+
+| Env | Default | Purpose |
+|-----|---------|---------|
+| `CMSH_BIN` | `cmsh` | Path to cmsh |
+| `BCM_WLM_USE` | `wlm; use slurm` | cmsh WLM preamble (empty = skip WLM) |
+| `BCM_DEVICE_CLOSED_STATUS` | `closed` | Device status while drained |
+| `BCM_DEVICE_OPEN_STATUS` | `ok` | Device status after undrain |
+
+## Ansible (optional)
+
+```bash
+cp ansible/inventory.example.ini ansible/inventory.ini
+# edit [gpu] hosts
+ansible-playbook -i ansible/inventory.ini ansible/update-clean.yml
+ansible-playbook -i ansible/inventory.ini ansible/update-clean.yml -e dry_run=true
+ansible-playbook -i ansible/inventory.ini ansible/update-clean.yml -e 'extra_args=--gpu-only'
+```
+
+Busy nodes are skipped when `skip_if_gpu_busy=true` (default).
+
 ### Supported systems
 
 - **NVIDIA DGX** (DGX OS — Ubuntu-based)
@@ -162,14 +227,14 @@ Not a replacement for NVIDIA’s official upgrade paths for DGX OS major version
 ### Repository layout
 
 ```
-update-clean.sh          # main script
-VERSION                  # release version
-CHANGELOG.md             # change history
-README.md                # documentation
-LICENSE                  # GNU GPLv3
+update-clean.sh          # main per-node script
+VERSION / CHANGELOG.md / README.md / LICENSE
 update-clean.conf.example
+systemd/                 # optional weekly timer (single node)
+fleet/                   # multi-node SSH runner + hosts.example
+bcm/                     # Base Command Manager hooks + cmsh examples
+ansible/                 # optional playbook + inventory example
 .github/workflows/       # CI (ShellCheck)
-systemd/                 # optional weekly timer
 ```
 
 ### License

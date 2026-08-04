@@ -21,3 +21,7 @@ push.sh
 cleanup-push.sh
 *.bak
 *.bak-*
+
+# Fleet run artifacts
+fleet-runs/
+ansible/inventory.ini

@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented here.
 
+## [1.1.0] - 2026-08-04
+
+### Added
+- `fleet/update-clean-fleet.sh` — multi-node SSH runner with parallel execution, deploy, and GPU drain policies (`skip` / `wait` / `force`)
+- `fleet/hosts.example` — inventory template
+- `bcm/bcm-hooks.sh` — Base Command Manager helpers (`cmsh` / `pdsh` / Slurm `scontrol`): list category, drain/undrain, maintenance window
+- `bcm/cmsh-maintenance.example` — annotated cmsh session notes for SuperPOD windows
+- `ansible/update-clean.yml` + `ansible/inventory.example.ini` — optional Ansible deploy/run with busy-GPU skip
+- Fleet run summaries under `fleet-runs/<timestamp>/` (gitignored)
+
+### Notes
+- BCM command syntax varies by site; hooks are best-effort and support env overrides (`CMSH_BIN`, `BCM_WLM_USE`, etc.)
+
 ## [1.0.0] - 2026-08-04
 
 ### Added

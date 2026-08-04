@@ -1,0 +1,57 @@
+# Example cmsh session for SuperPOD / BCM maintenance windows
+# Copyright (C) 2026 wbharris
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Adjust category names (gpu, compute, dgx) and WLM module (slurm) for your site.
+# Prefer the wrapper: ./bcm/bcm-hooks.sh maintenance gpu "reason" start|end
+
+############################################################
+# 1) Inventory
+############################################################
+# cmsh
+# device
+# foreach -c gpu (get hostname)
+# quit
+
+############################################################
+# 2) Start maintenance — stop new work
+############################################################
+# Device-level close (BCM):
+#   cmsh -c 'device; foreach -c gpu (set status closed; set notes "update-clean"; commit)'
+#
+# Slurm drain via cmsh (if WLM module enabled):
+#   cmsh -c 'wlm; use slurm; nodes; drain node001,node002 "update-clean maintenance"'
+#
+# Or native Slurm on head node:
+#   scontrol update NodeName=node[001-008] State=DRAIN Reason="update-clean"
+
+############################################################
+# 3) Wait for jobs to finish / GPU idle
+############################################################
+#   squeue -w node001
+#   pdsh -g gpu 'nvidia-smi --query-compute-apps=pid --format=csv,noheader | wc -l'
+
+############################################################
+# 4) Deploy + run update-clean (from admin workstation / head)
+############################################################
+#   ./fleet/update-clean-fleet.sh --from-bcm-category gpu --deploy --parallel 4 \
+#     --drain-mode skip --
+#
+# Or pdsh once the script is installed:
+#   pdsh -g gpu 'sudo /usr/local/sbin/update-clean.sh'
+
+############################################################
+# 5) End maintenance — resume scheduling
+############################################################
+#   scontrol update NodeName=node[001-008] State=RESUME
+#   cmsh -c 'device; foreach -c gpu (set status ok; commit)'
+#
+# Wrapper:
+#   ./bcm/bcm-hooks.sh maintenance gpu end
+
+############################################################
+# Notes
+############################################################
+# - Do NOT auto-reboot multi-tenant SuperPOD blades without orchestration.
+# - Firmware / DGX OS major upgrades stay on NVIDIA-documented paths.
+# - update-clean is host package hygiene between vendor maintenance windows.
