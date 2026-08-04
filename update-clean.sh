@@ -156,6 +156,27 @@ _record_failure() { EXIT_CODE=$((EXIT_CODE + 1)); }
 
 has_cmd() { command -v "$1" >/dev/null 2>&1; }
 
+# Create a private temp file. Prefer LOG_DIR (or TMPDIR), never bare predictable paths first.
+safe_mktemp() {
+    local prefix="${1:-update-clean}"
+    local dir candidate
+
+    for dir in "${LOG_DIR:-}" "${TMPDIR:-}" /tmp; do
+        [ -n "$dir" ] || continue
+        [ -d "$dir" ] && [ -w "$dir" ] || continue
+        candidate=$(mktemp --tmpdir="$dir" "${prefix}.XXXXXX" 2>/dev/null) || continue
+        chmod 600 "$candidate" 2>/dev/null || true
+        printf '%s\n' "$candidate"
+        return 0
+    done
+
+    # Last resort (should be rare)
+    candidate="/tmp/${prefix}.$$.$RANDOM"
+    : >"$candidate" 2>/dev/null || candidate="/tmp/${prefix}.$$"
+    chmod 600 "$candidate" 2>/dev/null || true
+    printf '%s\n' "$candidate"
+}
+
 require_cmds() {
     local -a cmds=(apt-get dpkg awk sed grep tar mktemp flock)
     local cmd
@@ -268,20 +289,24 @@ truthy() {
 }
 
 apply_cli_config_overrides() {
-    # Explicit CLI flags override values loaded from config files
-    [ -n "$CLI_KERNEL_KEEP" ] && KERNEL_KEEP="$CLI_KERNEL_KEEP"
-    $CLI_DRY_RUN && DRY_RUN=true
-    $CLI_SKIP_KERNEL && SKIP_KERNEL=true
-    $CLI_SKIP_CONNECTIVITY && SKIP_CONNECTIVITY=true
-    $CLI_REBOOT_IF_REQUIRED && REBOOT_IF_REQUIRED=true
-    $CLI_DEBUG && DEBUG=true
-    $CLI_SKIP_GPU_CHECK && SKIP_GPU_CHECK=true
-    $CLI_GPU_ONLY && GPU_ONLY=true
-    [ -n "$CLI_SKIP_FIRMWARE" ] && SKIP_FIRMWARE="$CLI_SKIP_FIRMWARE"
-    [ -n "$CLI_HOLD_GPU" ] && HOLD_GPU="$CLI_HOLD_GPU"
-    [ -n "$CLI_DOCKER_PRUNE" ] && DOCKER_PRUNE="$CLI_DOCKER_PRUNE"
-    [ -n "$CLI_VERBOSITY" ] && VERBOSITY="$CLI_VERBOSITY"
-    [ -n "$CLI_CONSOLE_APT_MAX_LINES" ] && CONSOLE_APT_MAX_LINES="$CLI_CONSOLE_APT_MAX_LINES"
+    # Explicit CLI flags override values loaded from config files.
+    # Use truthy()/ -n checks — never execute flag variables as commands.
+    [ -n "${CLI_KERNEL_KEEP:-}" ] && KERNEL_KEEP="$CLI_KERNEL_KEEP"
+
+    if truthy "${CLI_DRY_RUN:-false}"; then DRY_RUN=true; fi
+    if truthy "${CLI_SKIP_KERNEL:-false}"; then SKIP_KERNEL=true; fi
+    if truthy "${CLI_SKIP_CONNECTIVITY:-false}"; then SKIP_CONNECTIVITY=true; fi
+    if truthy "${CLI_REBOOT_IF_REQUIRED:-false}"; then REBOOT_IF_REQUIRED=true; fi
+    if truthy "${CLI_DEBUG:-false}"; then DEBUG=true; fi
+    if truthy "${CLI_SKIP_GPU_CHECK:-false}"; then SKIP_GPU_CHECK=true; fi
+    if truthy "${CLI_GPU_ONLY:-false}"; then GPU_ONLY=true; fi
+
+    [ -n "${CLI_SKIP_FIRMWARE:-}" ] && SKIP_FIRMWARE="$CLI_SKIP_FIRMWARE"
+    [ -n "${CLI_HOLD_GPU:-}" ] && HOLD_GPU="$CLI_HOLD_GPU"
+    [ -n "${CLI_DOCKER_PRUNE:-}" ] && DOCKER_PRUNE="$CLI_DOCKER_PRUNE"
+    [ -n "${CLI_VERBOSITY:-}" ] && VERBOSITY="$CLI_VERBOSITY"
+    [ -n "${CLI_CONSOLE_APT_MAX_LINES:-}" ] && CONSOLE_APT_MAX_LINES="$CLI_CONSOLE_APT_MAX_LINES"
+
     return 0
 }
 
@@ -358,7 +383,11 @@ log_to_syslog() {
 }
 
 dump_debug_state() {
-    $DEBUG || return
+    # Must return 0 when debug is off — bare `return` after a failed test
+    # inherits status 1 and aborts the script under `set -e`.
+    if ! truthy "${DEBUG:-false}"; then
+        return 0
+    fi
     printf 'DEBUG STATE:\n'
     printf '  KERNEL_KEEP=%s SKIP_KERNEL=%s DRY_RUN=%s DEBUG=%s\n' \
         "${KERNEL_KEEP:-}" "${SKIP_KERNEL:-}" "${DRY_RUN:-}" "${DEBUG:-}"
@@ -462,12 +491,14 @@ list_installed_kernel_images() {
     suffix_re="${KERNEL_SUFFIX_EXCLUDE_REGEX:--(meta|dbg|dbgsym|rt|cloud|kvm|virtual)\$}"
     meta_re="${KERNEL_META_EXCLUDE_REGEX:-linux-image-(generic|generic-hwe|amd64)(-lts|-hwe)?\$}"
 
+    # grep may exit 1 when no matches; keep pipeline from tripping set -e / ERR trap
     dpkg-query -W -f='${Status}\t${Package}\n' 'linux-image-*' 2>/dev/null \
         | awk -F'\t' '$1 ~ /^install ok installed/ {print $2}' \
-        | grep -E '^linux-image(-unsigned)?-[0-9][0-9a-zA-Z.\-+]*' \
+        | grep -E '^linux-image(-unsigned)?-[0-9][0-9a-zA-Z._+-]*' \
         | grep -Ev -- "$suffix_re" \
         | grep -Ev -- "$meta_re" \
-        | sort -V
+        | sort -V \
+        || true
 }
 
 create_etc_backup() {
@@ -670,7 +701,7 @@ report_gpu_health() {
     fi
 
     count_gpu_compute_processes
-    if $GPU_BUSY; then
+    if truthy "${GPU_BUSY:-false}"; then
         warn "GPU compute processes active: $GPU_PROCESS_COUNT (workloads in progress)"
         if has_cmd nvidia-smi; then
             nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory \
@@ -739,7 +770,8 @@ list_gpu_hold_packages() {
         'intel-level-zero*' 'level-zero*' 'intel-opencl*' \
         2>/dev/null \
         | awk -F'\t' '$1 ~ /^install ok installed/ {print $2}' \
-        | sort -u
+        | sort -u \
+        || true
 }
 
 # Deprecated alias
@@ -761,7 +793,7 @@ hold_gpu_packages() {
     fi
 
     info "Holding ${#pkgs[@]} GPU/accelerator-related package(s) during cleanup..."
-    if $DRY_RUN; then
+    if truthy "${DRY_RUN:-false}"; then
         for p in "${pkgs[@]:0:15}"; do
             info "DRY-RUN: would apt-mark hold $p"
         done
@@ -795,7 +827,7 @@ docker_cleanup() {
         return 0
     fi
 
-    if $DRY_RUN; then
+    if truthy "${DRY_RUN:-false}"; then
         info "DRY-RUN: would docker prune mode=$mode"
         return 0
     fi
@@ -821,7 +853,7 @@ docker_cleanup() {
 guard_reboot_if_gpus_busy() {
     # Called when reboot is requested; returns 1 to block reboot
     count_gpu_compute_processes
-    if $GPU_BUSY; then
+    if truthy "${GPU_BUSY:-false}"; then
         error "Refusing reboot: $GPU_PROCESS_COUNT GPU compute process(es) still running"
         error "Drain workloads or re-run with maintenance window; use --offline after drain if needed"
         return 1
@@ -846,7 +878,7 @@ write_last_run_json() {
     [[ "$busy_procs" =~ ^[0-9]+$ ]] || busy_procs=0
     [[ "$failures" =~ ^[0-9]+$ ]] || failures=0
 
-    jq_err=$(mktemp 2>/dev/null || echo "/tmp/update-clean-jq.err")
+    jq_err=$(safe_mktemp "update-clean-jq")
     if jq -n \
         --argjson schema "$schema" \
         --arg v "$version" \
@@ -1097,7 +1129,7 @@ run_logged_cmd() {
     local tmp rc=0
     local apt_log="${APT_LOG:-/dev/null}"
 
-    tmp=$(mktemp 2>/dev/null || echo "/tmp/update-clean-cmd.$$")
+    tmp=$(safe_mktemp "update-clean-cmd")
     set +e
     "$@" >"$tmp" 2>&1
     rc=$?
@@ -1112,7 +1144,7 @@ apt_run() {
     local -a args=("$@")
     local desc
 
-    if $DRY_RUN; then
+    if truthy "${DRY_RUN:-false}"; then
         info "DRY-RUN: would run: apt-get -y $(format_cmd_args "${args[@]}")"
         return 0
     fi
@@ -1209,7 +1241,7 @@ remove_old_kernels() {
     done
 
     for pkg in "${to_remove[@]:0:delcount}"; do
-        if $DRY_RUN; then
+        if truthy "${DRY_RUN:-false}"; then
             info "DRY-RUN: Would purge old kernel: $pkg"
             continue
         fi
@@ -1233,8 +1265,8 @@ rotate_old_logs() {
     local -a files=()
     local i
 
-    [ "$keep" -le 0 ] && return
-    [ -d "$LOG_DIR" ] || return
+    [ "$keep" -le 0 ] && return 0
+    [ -d "$LOG_DIR" ] || return 0
 
     if find "$LOG_DIR" -maxdepth 0 -printf '%T@\n' >/dev/null 2>&1; then
         mapfile -t files < <(
@@ -1319,7 +1351,7 @@ safe_run() {
     shift
     local tmp rc=0
     info "$desc"
-    tmp=$(mktemp 2>/dev/null || echo "/tmp/update-clean-safe.$$")
+    tmp=$(safe_mktemp "update-clean-safe")
     set +e
     "$@" >"$tmp" 2>&1
     rc=$?
@@ -1427,6 +1459,7 @@ show_version() {
     query_gpu_driver || true
     printf '%s %s\n' "$SCRIPT_NAME" "$SCRIPT_VERSION"
     printf 'Distro: %s\n' "$DISTRO_NAME"
+    [ -n "${DISTRO_VERSION:-}" ] && printf 'Distro version: %s\n' "$DISTRO_VERSION"
     printf 'AI platform: %s%s\n' "$AI_PLATFORM" "${AI_PLATFORM_DETAIL:+ ($AI_PLATFORM_DETAIL)}"
     if [ -n "$GPU_DRIVER" ]; then
         printf 'GPU driver: %s  runtime: %s  GPUs: %s\n' \
@@ -1478,7 +1511,7 @@ run_preflight_checks() {
         printf ' (%s)' "$ARCHIVE_HOST"
     fi
     printf ': '
-    if $SKIP_CONNECTIVITY; then
+    if truthy "${SKIP_CONNECTIVITY:-false}"; then
         printf '%s\n' "SKIPPED (--offline)"
     elif check_connectivity; then
         printf '%s\n' "OK"
@@ -1677,12 +1710,12 @@ detect_distro
 check_debian_based
 detect_ai_platform
 
-if $DEBUG; then
+if truthy "${DEBUG:-false}"; then
     set -x
     info "Debug mode enabled (set -x)"
 fi
 
-if $GPU_ONLY; then
+if truthy "${GPU_ONLY:-false}"; then
     # Health-only path: no root required for most queries; some detail needs root
     if [ "$EUID" -ne 0 ]; then
         info "GPU-only mode (non-root) — vendor GPU CLI works; dmidecode/systemctl may be limited"
@@ -1693,7 +1726,7 @@ if $GPU_ONLY; then
     exit 0
 fi
 
-if $DRY_RUN; then
+if truthy "${DRY_RUN:-false}"; then
     info "DRY RUN MODE ENABLED - No changes will be made"
     info "DRY-RUN may still use the network to list upgradable packages"
 fi
@@ -1708,7 +1741,8 @@ if ! mkdir -p "$LOG_DIR"; then
     printf '%s\n' "Failed to create log directory $LOG_DIR" >&2
     exit 1
 fi
-chmod 755 "$LOG_DIR"
+# Restrict directory on multi-tenant hosts; files inside are 0600
+chmod 700 "$LOG_DIR" 2>/dev/null || chmod 755 "$LOG_DIR"
 
 if [ ! -w "$LOG_DIR" ]; then
     printf '%s\n' "Log directory $LOG_DIR is not writable" >&2
@@ -1747,7 +1781,7 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-if $SKIP_CONNECTIVITY; then
+if truthy "${SKIP_CONNECTIVITY:-false}"; then
     warn "Skipping internet connectivity check (--offline)"
 else
     info "Checking internet connectivity..."
@@ -1765,9 +1799,9 @@ warn_low_partition_space "/boot" "$BOOT_LOW_KB"
 warn_low_partition_space "/var" "$VAR_LOW_KB"
 
 info "AI platform: $AI_PLATFORM${AI_PLATFORM_DETAIL:+ ($AI_PLATFORM_DETAIL)}"
-if ! $SKIP_GPU_CHECK; then
+if ! truthy "${SKIP_GPU_CHECK:-false}"; then
     report_gpu_health || true
-    if $GPU_BUSY; then
+    if truthy "${GPU_BUSY:-false}"; then
         warn "GPUs are busy — updates will proceed, but reboot will be blocked if requested"
         warn "Prefer draining jobs before multi-tenant blade maintenance"
     fi
@@ -1808,12 +1842,13 @@ fi
 
 err_trap() {
     local rc=$?
-    local cmd=${BASH_COMMAND:-}
+    # Avoid name clash with arrays named cmd elsewhere (SC2178/SC2128)
+    local failing_cmd=${BASH_COMMAND:-}
     local lineno=${BASH_LINENO[0]:-?}
     local i
 
     _record_failure
-    error "Unhandled error (rc=$rc) while running: '$cmd' at or near line $lineno"
+    error "Unhandled error (rc=$rc) while running: '$failing_cmd' at or near line $lineno"
     if [ "${#BASH_SOURCE[@]}" -gt 1 ]; then
         error "Call stack (most recent call last):"
         for ((i = 1; i < ${#BASH_SOURCE[@]}; i++)); do
@@ -1853,7 +1888,7 @@ info "Fixing broken dependencies..."
 apt_run install -f || warn "apt install -f had issues"
 
 info "Updating package lists..."
-if $DRY_RUN; then
+if truthy "${DRY_RUN:-false}"; then
     info "DRY-RUN: Would run apt-get update (skipped)"
 else
     if ! apt_get_update_with_retries; then
@@ -1874,7 +1909,7 @@ apt_run upgrade || warn "apt upgrade had issues"
 info "Listing upgradable packages after initial upgrade:"
 apt list --upgradable 2>/dev/null || true
 
-if $DRY_RUN; then
+if truthy "${DRY_RUN:-false}"; then
     show_dry_run_preview
 fi
 
@@ -1888,7 +1923,7 @@ info "Holding critical packages to prevent accidental removal..."
 hold_critical_packages
 hold_gpu_packages
 
-if $DRY_RUN; then
+if truthy "${DRY_RUN:-false}"; then
     info "DRY-RUN: Would run autoremove, clean, purge configs, kernel removal, etc."
 else
     info "Removing unnecessary packages (autoremove --purge)..."
@@ -1898,7 +1933,7 @@ else
     run_logged_cmd "apt-get autoclean" apt-get autoclean || _record_failure
     run_logged_cmd "apt-get clean" apt-get clean || _record_failure
 
-    if [ "${BACKUP_MODE}" = true ]; then
+    if truthy "${BACKUP_MODE:-false}"; then
         create_etc_backup || true
     fi
 
@@ -1907,27 +1942,27 @@ else
     apt_run purge '~c' || warn "Purging residual configs had issues"
 fi
 
-if $SKIP_KERNEL; then
+if truthy "${SKIP_KERNEL:-false}"; then
     info "Skipping old kernel removal (--no-kernel)."
 else
     info "Removing old kernels (keeping current + previous)..."
     remove_old_kernels
 fi
 
-if $KERNELS_REMOVED; then
-    if ! $DRY_RUN; then
+if truthy "${KERNELS_REMOVED:-false}"; then
+    if ! truthy "${DRY_RUN:-false}"; then
         info "Old kernels were removed. To recover: boot GRUB menu and select a previous kernel entry."
     else
         info "DRY-RUN: Would remove old kernels. Recovery: boot GRUB menu and select a previous kernel."
     fi
 fi
 
-if $KERNELS_REMOVED && has_cmd update-grub && ! $DRY_RUN; then
+if truthy "${KERNELS_REMOVED:-false}" && has_cmd update-grub && ! truthy "${DRY_RUN:-false}"; then
     safe_run "Updating GRUB bootloader" update-grub
 fi
 
 if has_cmd flatpak; then
-    if $DRY_RUN; then
+    if truthy "${DRY_RUN:-false}"; then
         info "DRY-RUN: Would update Flatpaks and remove unused"
     else
         safe_run "Updating Flatpaks" flatpak_update
@@ -1936,7 +1971,7 @@ if has_cmd flatpak; then
 fi
 
 if has_cmd snap; then
-    if $DRY_RUN; then
+    if truthy "${DRY_RUN:-false}"; then
         info "DRY-RUN: Would refresh Snaps and remove old revisions"
     else
         safe_run "Refreshing Snaps" snap refresh
@@ -1948,7 +1983,7 @@ if truthy "$SKIP_FIRMWARE"; then
     info "Skipping fwupd firmware updates (SKIP_FIRMWARE=true; use --with-firmware to enable)"
     info "On managed clusters, prefer vendor/cluster firmware workflows over ad-hoc fwupd"
 elif has_cmd fwupdmgr; then
-    if $DRY_RUN; then
+    if truthy "${DRY_RUN:-false}"; then
         info "DRY-RUN: Would update firmware"
     else
         safe_run "Refreshing firmware metadata" fwupdmgr refresh --force
@@ -1960,7 +1995,7 @@ fi
 docker_cleanup
 
 if has_cmd journalctl; then
-    if $DRY_RUN; then
+    if truthy "${DRY_RUN:-false}"; then
         info "DRY-RUN: Would vacuum journal logs (vacuum-time=${JOURNAL_VACUUM_TIME})"
     else
         safe_run "Vacuuming journal logs (vacuum-time=${JOURNAL_VACUUM_TIME})" \
@@ -1968,7 +2003,7 @@ if has_cmd journalctl; then
     fi
 fi
 
-if ! $DRY_RUN; then
+if ! truthy "${DRY_RUN:-false}"; then
     info "Cleaning partial package lists..."
     if [ -d /var/lib/apt/lists/partial ]; then
         rm -rf -- /var/lib/apt/lists/partial/* || warn "Failed to clean partial apt lists"
@@ -2000,8 +2035,8 @@ fi
 
 if [ "$REBOOT_DURING_RUN" = true ]; then
     warn "Reboot is required to complete some updates."
-    if [ "${REBOOT_IF_REQUIRED}" = true ] && ! $DRY_RUN; then
-        if ! $SKIP_GPU_CHECK && ! guard_reboot_if_gpus_busy; then
+    if truthy "${REBOOT_IF_REQUIRED:-false}" && ! truthy "${DRY_RUN:-false}"; then
+        if ! truthy "${SKIP_GPU_CHECK:-false}" && ! guard_reboot_if_gpus_busy; then
             warn "Reboot deferred because GPUs are busy"
             _record_failure
         else
@@ -2011,9 +2046,9 @@ if [ "$REBOOT_DURING_RUN" = true ]; then
         fi
     else
         warn "Run: sudo reboot (or use --reboot-if-required) after draining GPU jobs"
-        if ! $SKIP_GPU_CHECK; then
+        if ! truthy "${SKIP_GPU_CHECK:-false}"; then
             count_gpu_compute_processes
-            if $GPU_BUSY; then
+            if truthy "${GPU_BUSY:-false}"; then
                 warn "Currently $GPU_PROCESS_COUNT GPU process(es) — do not reboot until drained"
             fi
         fi
@@ -2026,7 +2061,7 @@ LAST_RUN_FILE="$LAST_RUN_DIR/last-run"
 RUN_STATUS=success
 [ "$EXIT_CODE" -ne 0 ] && RUN_STATUS=failure
 
-if ! $DRY_RUN; then
+if ! truthy "${DRY_RUN:-false}"; then
     mkdir -p "$LAST_RUN_DIR"
     RUN_TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
     REBOOT_FLAG=$([ "$REBOOT_DURING_RUN" = true ] && echo "yes" || echo "no")
@@ -2069,10 +2104,10 @@ else
     info "DRY-RUN: Would write last-run record"
 fi
 
-if has_cmd needrestart && ! $DRY_RUN; then
+if has_cmd needrestart && ! truthy "${DRY_RUN:-false}"; then
     info "Checking services that need restart..."
     needrestart -r a -l 2>/dev/null || true
-elif $DRY_RUN; then
+elif truthy "${DRY_RUN:-false}"; then
     info "DRY-RUN: Would check for services needing restart"
 fi
 

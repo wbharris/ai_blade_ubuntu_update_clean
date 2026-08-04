@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented here.
 
+## [1.3.1] - 2026-08-04
+
+### Fixed / hardened (review follow-up)
+- CLI overrides and all booleans use `truthy()` instead of executing `$FLAG` as a command
+- `dump_debug_state` returns 0 when debug is off (was aborting script under `set -e`)
+- `safe_mktemp` prefers `LOG_DIR` / `TMPDIR` with mode 0600 (avoids predictable `/tmp` paths)
+- Log directory mode `700` (files remain `600`)
+- Kernel list regex character-class fix; empty `grep` pipelines no longer trip ERR trap
+- ShellCheck clean at error severity; CI runs `bash -n`, CLI smoke, and root `--dry-run`
+
 ## [1.3.0] - 2026-08-04
 
 ### Changed (vendor-agnostic rebrand)

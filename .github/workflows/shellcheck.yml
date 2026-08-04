@@ -1,4 +1,4 @@
-name: ShellCheck
+name: ShellCheck and smoke
 
 on:
   push:
@@ -18,5 +18,20 @@ jobs:
           scandir: '.'
           severity: error
           check_together: 'yes'
-          # Include nested fleet/bcm helpers
           additional_files: 'fleet/update-clean-fleet.sh bcm/bcm-hooks.sh'
+
+      - name: bash -n syntax
+        run: |
+          bash -n update-clean.sh
+          bash -n fleet/update-clean-fleet.sh
+          bash -n bcm/bcm-hooks.sh
+
+      - name: CLI smoke (non-root)
+        run: |
+          ./update-clean.sh --help | head -5
+          ./update-clean.sh --version
+          ./update-clean.sh --check --offline || true
+
+      - name: Dry-run smoke (root)
+        run: |
+          sudo ./update-clean.sh --dry-run --offline --no-gpu-check --quiet

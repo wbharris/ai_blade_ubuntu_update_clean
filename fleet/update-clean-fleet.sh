@@ -77,6 +77,13 @@ Environment: SSH_USER REMOTE_PATH PARALLEL DRAIN_MODE DRAIN_WAIT_SEC DRAIN_POLL_
 USAGE
 }
 
+truthy() {
+    case "${1,,}" in
+        true|yes|1|on) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 info() { printf '[INFO] %s\n' "$*"; }
 warn() { printf '[WARN] %s\n' "$*" >&2; }
 err()  { printf '[ERROR] %s\n' "$*" >&2; }
@@ -262,7 +269,7 @@ deploy_script() {
     local -a scpcmd=(scp "${SSH_OPTS[@]}")
     [[ -n "$port" ]] && scpcmd+=("-P" "$port")
 
-    if $DRY_RUN_FLEET; then
+    if truthy "${DRY_RUN_FLEET:-false}"; then
         info "DRY-RUN-FLEET: would scp $LOCAL_UPDATE_CLEAN -> ${target}:${REMOTE_PATH}"
         return 0
     fi
@@ -287,7 +294,7 @@ run_one_host() {
     {
         printf '[%s] BEGIN host=%s target=%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$label" "$target"
 
-        if $DEPLOY; then
+        if truthy "${DEPLOY:-false}"; then
             if ! deploy_script "$target" "$port"; then
                 status="deploy_fail"
                 rc=1
@@ -314,7 +321,7 @@ run_one_host() {
             return
         fi
 
-        if $DRY_RUN_FLEET; then
+        if truthy "${DRY_RUN_FLEET:-false}"; then
             info "DRY-RUN-FLEET: would run sudo $REMOTE_PATH ${PASS_ARGS[*]:-}"
             status="dry_run"
             rc=0
