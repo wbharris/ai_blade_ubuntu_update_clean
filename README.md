@@ -58,6 +58,9 @@ sudo ./update-clean.sh --reboot-if-required    # still blocked if GPUs busy
 sudo ./update-clean.sh --offline
 sudo ./update-clean.sh --last
 sudo ./update-clean.sh --debug
+sudo ./update-clean.sh --quiet              # less console noise
+sudo ./update-clean.sh --verbose            # full apt dumps on console
+sudo ./update-clean.sh --console-lines 40
 ```
 
 **Dry-run:** skips `apt-get update` and logs planned `apt-get` commands. It may still use the network for read-only listings.
@@ -98,6 +101,10 @@ CRITICAL_PACKAGES=(base-files base-passwd bash coreutils util-linux)
 | `HOLD_NVIDIA` | `true` | `apt-mark hold` NVIDIA/CUDA-related packages during cleanup |
 | `DOCKER_PRUNE` | `dangling` | `none` / `dangling` / `unused` / `all` |
 | `JOURNAL_VACUUM_TIME` | `30d` | Passed to `journalctl --vacuum-time` |
+| `VERBOSITY` | `normal` | `quiet` / `normal` / `verbose` console noise |
+| `CONSOLE_APT_MAX_LINES` | `80` | Cap apt lines on console (`0` = unlimited; full log on disk) |
+| `KERNEL_SUFFIX_EXCLUDE_REGEX` | specialty suffixes | `grep -Ev` filter for kernel purge candidates |
+| `KERNEL_META_EXCLUDE_REGEX` | generic/hwe meta | Keeps meta packages out of purge list |
 | `KERNEL_KEEP` | `2` | Extra kernels kept besides the running one |
 | `REBOOT_IF_REQUIRED` | `false` | Auto-reboot; blocked if GPU compute jobs are active |
 

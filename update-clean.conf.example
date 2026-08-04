@@ -38,6 +38,15 @@
 # journalctl vacuum window (default: 30d)
 # JOURNAL_VACUUM_TIME=14d
 
+# Verbosity: quiet | normal | verbose (default: normal)
+# VERBOSITY=normal
+# Max apt lines on console in normal mode (0 = unlimited; full log always in APT_LOG)
+# CONSOLE_APT_MAX_LINES=80
+
+# Kernel package filters (ERE for grep -Ev). Defaults exclude meta/debug/cloud variants.
+# KERNEL_SUFFIX_EXCLUDE_REGEX='-(meta|dbg|dbgsym|rt|cloud|kvm|virtual)$'
+# KERNEL_META_EXCLUDE_REGEX='linux-image-(generic|generic-hwe|amd64)(-lts|-hwe)?$'
+
 # APT lock wait (seconds) when another apt/dpkg process holds locks
 # APT_LOCK_WAIT_SECS=60
 # APT_LOCK_POLL_SECS=5

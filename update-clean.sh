@@ -66,9 +66,17 @@ SKIP_FIRMWARE=${SKIP_FIRMWARE:-true}   # safer default on AI blades (use vendor 
 HOLD_NVIDIA=${HOLD_NVIDIA:-true}
 DOCKER_PRUNE=${DOCKER_PRUNE:-dangling} # none|dangling|unused
 GPU_ONLY=false
+# quiet | normal | verbose — console noise vs full apt dumps
+VERBOSITY=${VERBOSITY:-normal}
+# Max apt/dpkg lines printed to console in normal mode (0 = unlimited). Full output always in APT_LOG.
+CONSOLE_APT_MAX_LINES=${CONSOLE_APT_MAX_LINES:-80}
 LOG_RETENTION=${LOG_RETENTION:-3}
 KERNEL_KEEP=${KERNEL_KEEP:-2}
 KERNEL_KEEP_MAX=${KERNEL_KEEP_MAX:-10}
+# Exclude non-versioned / specialty kernel packages from removal candidates (ERE for grep -Ev)
+# Meta packages (generic/hwe) must stay so apt does not remove the kernel metapackage chain.
+KERNEL_SUFFIX_EXCLUDE_REGEX=${KERNEL_SUFFIX_EXCLUDE_REGEX:-'-(meta|dbg|dbgsym|rt|cloud|kvm|virtual)$'}
+KERNEL_META_EXCLUDE_REGEX=${KERNEL_META_EXCLUDE_REGEX:-'linux-image-(generic|generic-hwe|amd64)(-lts|-hwe)?$'}
 # journalctl --vacuum-time value (e.g. 30d, 14d, 1week)
 JOURNAL_VACUUM_TIME=${JOURNAL_VACUUM_TIME:-30d}
 # last-run.json schema (bump when removing/renaming fields)
@@ -116,6 +124,8 @@ CLI_SKIP_FIRMWARE=""
 CLI_HOLD_NVIDIA=""
 CLI_DOCKER_PRUNE=""
 CLI_GPU_ONLY=false
+CLI_VERBOSITY=""
+CLI_CONSOLE_APT_MAX_LINES=""
 
 # ────────────────────────────────────────────────────────────────
 # Colors (TTY-aware)
@@ -222,6 +232,26 @@ validate_config_values() {
             HOLD_NVIDIA=true
             ;;
     esac
+    case "${VERBOSITY,,}" in
+        quiet|normal|verbose) ;;
+        *)
+            warn "Invalid VERBOSITY='$VERBOSITY', using normal"
+            VERBOSITY=normal
+            ;;
+    esac
+    if ! [[ "$CONSOLE_APT_MAX_LINES" =~ ^[0-9]+$ ]]; then
+        warn "Invalid CONSOLE_APT_MAX_LINES='$CONSOLE_APT_MAX_LINES', using 80"
+        CONSOLE_APT_MAX_LINES=80
+    fi
+    if [ -z "${JOURNAL_VACUUM_TIME:-}" ]; then
+        JOURNAL_VACUUM_TIME=30d
+    fi
+    if [ -z "${KERNEL_SUFFIX_EXCLUDE_REGEX:-}" ]; then
+        KERNEL_SUFFIX_EXCLUDE_REGEX='-(meta|dbg|dbgsym|rt|cloud|kvm|virtual)$'
+    fi
+    if [ -z "${KERNEL_META_EXCLUDE_REGEX:-}" ]; then
+        KERNEL_META_EXCLUDE_REGEX='linux-image-(generic|generic-hwe|amd64)(-lts|-hwe)?$'
+    fi
 }
 
 truthy() {
@@ -244,6 +274,8 @@ apply_cli_config_overrides() {
     [ -n "$CLI_SKIP_FIRMWARE" ] && SKIP_FIRMWARE="$CLI_SKIP_FIRMWARE"
     [ -n "$CLI_HOLD_NVIDIA" ] && HOLD_NVIDIA="$CLI_HOLD_NVIDIA"
     [ -n "$CLI_DOCKER_PRUNE" ] && DOCKER_PRUNE="$CLI_DOCKER_PRUNE"
+    [ -n "$CLI_VERBOSITY" ] && VERBOSITY="$CLI_VERBOSITY"
+    [ -n "$CLI_CONSOLE_APT_MAX_LINES" ] && CONSOLE_APT_MAX_LINES="$CLI_CONSOLE_APT_MAX_LINES"
     return 0
 }
 
@@ -330,6 +362,8 @@ dump_debug_state() {
         "${DISTRO_NAME:-<unset>}" "${ARCHIVE_HOST:-<unset>}" "${SKIP_CONNECTIVITY:-}"
     printf '  AI_PLATFORM=%s SKIP_FIRMWARE=%s HOLD_NVIDIA=%s DOCKER_PRUNE=%s\n' \
         "${AI_PLATFORM:-}" "${SKIP_FIRMWARE:-}" "${HOLD_NVIDIA:-}" "${DOCKER_PRUNE:-}"
+    printf '  VERBOSITY=%s CONSOLE_APT_MAX_LINES=%s\n' \
+        "${VERBOSITY:-}" "${CONSOLE_APT_MAX_LINES:-}"
 }
 
 format_cmd_args() {
@@ -412,17 +446,21 @@ report_apt_lock_holders() {
 }
 
 # Versioned kernel *image* packages only (safe to purge when old).
-# Excludes:
+# Excludes (configurable via KERNEL_SUFFIX_EXCLUDE_REGEX / KERNEL_META_EXCLUDE_REGEX):
 #   - meta packages: linux-image-generic, linux-image-generic-hwe*, linux-image-amd64*
-#     (these are virtual/meta targets, not bootable versioned images)
+#     (virtual/meta targets, not bootable versioned images — must not purge)
 #   - suffix variants: -meta, -dbg, -dbgsym, -rt, -cloud, -kvm, -virtual
-# Intent: manage real linux-image-<version>-generic style packages only.
+# Intent: manage real linux-image-<version>-* packages only.
 list_installed_kernel_images() {
+    local suffix_re meta_re
+    suffix_re="${KERNEL_SUFFIX_EXCLUDE_REGEX:--(meta|dbg|dbgsym|rt|cloud|kvm|virtual)\$}"
+    meta_re="${KERNEL_META_EXCLUDE_REGEX:-linux-image-(generic|generic-hwe|amd64)(-lts|-hwe)?\$}"
+
     dpkg-query -W -f='${Status}\t${Package}\n' 'linux-image-*' 2>/dev/null \
         | awk -F'\t' '$1 ~ /^install ok installed/ {print $2}' \
         | grep -E '^linux-image(-unsigned)?-[0-9][0-9a-zA-Z.\-+]*' \
-        | grep -Ev -- '-(meta|dbg|dbgsym|rt|cloud|kvm|virtual)$' \
-        | grep -Ev 'linux-image-(generic|generic-hwe|amd64)(-lts|-hwe)?$' \
+        | grep -Ev -- "$suffix_re" \
+        | grep -Ev -- "$meta_re" \
         | sort -V
 }
 
@@ -735,17 +773,17 @@ docker_cleanup() {
     case "$mode" in
         dangling)
             info "Pruning dangling Docker images (safe default for AI blades)..."
-            docker image prune -f 2>&1 | tee -a "${APT_LOG:-/dev/null}" || _record_failure
+            run_logged_cmd "docker image prune -f" docker image prune -f || _record_failure
             ;;
         unused)
             info "Pruning unused Docker images (not referenced by containers)..."
-            docker image prune -a -f 2>&1 | tee -a "${APT_LOG:-/dev/null}" || _record_failure
-            docker container prune -f 2>&1 | tee -a "${APT_LOG:-/dev/null}" || true
-            docker network prune -f 2>&1 | tee -a "${APT_LOG:-/dev/null}" || true
+            run_logged_cmd "docker image prune -a -f" docker image prune -a -f || _record_failure
+            run_logged_cmd "docker container prune -f" docker container prune -f || true
+            run_logged_cmd "docker network prune -f" docker network prune -f || true
             ;;
         all)
             warn "DOCKER_PRUNE=all: aggressive prune (volumes excluded for safety)"
-            docker system prune -a -f 2>&1 | tee -a "${APT_LOG:-/dev/null}" || _record_failure
+            run_logged_cmd "docker system prune -a -f" docker system prune -a -f || _record_failure
             ;;
     esac
 }
@@ -971,15 +1009,85 @@ purge_kernel_related() {
     fi
 }
 
+# Capture full command output to APT_LOG; print to console per VERBOSITY /
+# CONSOLE_APT_MAX_LINES. Full body always archived (never truncated on disk).
+emit_cmd_output() {
+    local desc="$1"
+    local tmp="$2"
+    local rc="$3"
+    local apt_log="${APT_LOG:-/dev/null}"
+    local max_lines="${CONSOLE_APT_MAX_LINES:-80}"
+    local lines=0
+    local verb="${VERBOSITY:-normal}"
+
+    if [ -f "$tmp" ]; then
+        cat "$tmp" >>"$apt_log" 2>/dev/null || true
+        lines=$(wc -l <"$tmp" 2>/dev/null | tr -d ' ' || echo 0)
+        [[ "$lines" =~ ^[0-9]+$ ]] || lines=0
+    fi
+
+    case "${verb,,}" in
+        quiet)
+            if [ "$rc" -eq 0 ]; then
+                info "$desc completed OK (${lines} lines → $apt_log)"
+            else
+                warn "$desc failed (rc=$rc). Last 20 lines:"
+                tail -n 20 "$tmp" 2>/dev/null || true
+                warn "Full output: $apt_log"
+            fi
+            ;;
+        verbose)
+            if [ -f "$tmp" ]; then
+                cat "$tmp"
+            fi
+            ;;
+        *)
+            # normal: cap console; note truncation
+            if [ ! -f "$tmp" ]; then
+                return 0
+            fi
+            if [ "$max_lines" -eq 0 ] || [ "$lines" -le "$max_lines" ]; then
+                cat "$tmp"
+            else
+                head -n "$max_lines" "$tmp"
+                warn "... console truncated at $max_lines of $lines lines for: $desc"
+                warn "Full output preserved in: $apt_log"
+            fi
+            if [ "$rc" -ne 0 ]; then
+                warn "$desc exited rc=$rc (see $apt_log)"
+            fi
+            ;;
+    esac
+}
+
+run_logged_cmd() {
+    # run_logged_cmd "description" cmd [args...]
+    local desc="$1"
+    shift
+    local tmp rc=0
+    local apt_log="${APT_LOG:-/dev/null}"
+
+    tmp=$(mktemp 2>/dev/null || echo "/tmp/update-clean-cmd.$$")
+    set +e
+    "$@" >"$tmp" 2>&1
+    rc=$?
+    set -e
+
+    emit_cmd_output "$desc" "$tmp" "$rc"
+    rm -f "$tmp" 2>/dev/null || true
+    return "$rc"
+}
+
 apt_run() {
     local -a args=("$@")
-    local apt_log="${APT_LOG:-/dev/null}"
+    local desc
 
     if $DRY_RUN; then
         info "DRY-RUN: would run: apt-get -y $(format_cmd_args "${args[@]}")"
         return 0
     fi
 
+    desc="apt-get $(format_cmd_args "${args[@]}")"
     local -a cmd=(
         apt-get
         -o Dpkg::Options::="--force-confdef"
@@ -988,8 +1096,7 @@ apt_run() {
         "${args[@]}"
     )
 
-    # pipefail ensures apt-get exit code is preserved through tee
-    if ! DEBIAN_FRONTEND=noninteractive "${cmd[@]}" 2>&1 | tee -a "$apt_log"; then
+    if ! run_logged_cmd "$desc" env DEBIAN_FRONTEND=noninteractive "${cmd[@]}"; then
         _record_failure
         return 1
     fi
@@ -998,10 +1105,9 @@ apt_run() {
 
 apt_get_update_with_retries() {
     local attempt=0
-    local apt_log="${APT_LOG:-/dev/null}"
 
     while :; do
-        if apt-get update 2>&1 | tee -a "$apt_log"; then
+        if run_logged_cmd "apt-get update (attempt $((attempt + 1)))" apt-get update; then
             return 0
         fi
         attempt=$((attempt + 1))
@@ -1181,11 +1287,46 @@ send_completion_notification() {
 safe_run() {
     local desc="$1"
     shift
+    local tmp rc=0
     info "$desc"
-    if ! "$@"; then
-        warn "$desc failed — continuing"
-        _record_failure
+    tmp=$(mktemp 2>/dev/null || echo "/tmp/update-clean-safe.$$")
+    set +e
+    "$@" >"$tmp" 2>&1
+    rc=$?
+    set -e
+    if [ "$rc" -eq 0 ]; then
+        case "${VERBOSITY:-normal}" in
+            quiet) ;;
+            verbose) [ -s "$tmp" ] && cat "$tmp" ;;
+            *)
+                # show up to 20 lines of success chatter in normal mode
+                if [ -s "$tmp" ]; then
+                    head -n 20 "$tmp"
+                    local n
+                    n=$(wc -l <"$tmp" | tr -d ' ')
+                    if [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -gt 20 ]; then
+                        info "... ($n lines; use --verbose for full output)"
+                    fi
+                fi
+                ;;
+        esac
+        rm -f "$tmp" 2>/dev/null || true
+        return 0
     fi
+    warn "$desc failed (rc=$rc) — continuing"
+    if [ -s "$tmp" ]; then
+        warn "--- output from failed step ---"
+        if [ "${VERBOSITY:-normal}" = "verbose" ]; then
+            cat "$tmp"
+        else
+            tail -n 40 "$tmp"
+        fi
+        warn "--- end failed step output ---"
+        cat "$tmp" >>"${APT_LOG:-/dev/null}" 2>/dev/null || true
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+    _record_failure
+    return 0
 }
 
 check_systemd_resolved() {
@@ -1217,6 +1358,9 @@ Options:
   --docker-prune MODE  none|dangling|unused|all (default: dangling)
   --last, --status  Show information from the last run
   --check, --doctor Run pre-flight checks only (no updates)
+  --quiet, -q       Quiet console (apt details only on failure; full log on disk)
+  --verbose         Full apt/dpkg output on console
+  --console-lines N Cap apt lines on console in normal mode (default: 80; 0=unlimited)
   --debug           Enable shell trace (set -x) for troubleshooting
   --help, -h        Show this help
   --version, -v     Show version information
@@ -1224,6 +1368,8 @@ Options:
 Environment / Config:
   LOG_RETENTION     Number of logs to keep (default: 3)
   KERNEL_KEEP       Kernels to keep besides running (default: 2, max 10)
+  KERNEL_SUFFIX_EXCLUDE_REGEX  grep -Ev pattern for specialty kernels
+  KERNEL_META_EXCLUDE_REGEX    grep -Ev pattern for meta packages
   LOG_DIR           Log directory (default: /var/log/update-clean)
   LOCKFILE          Instance lock file (default: /run/update-clean.lock)
   LAST_RUN_DIR      Last-run record directory (default: /var/lib/update-clean)
@@ -1233,6 +1379,8 @@ Environment / Config:
   HOLD_NVIDIA       Hold NVIDIA/CUDA packages during cleanup (default: true)
   DOCKER_PRUNE      none|dangling|unused|all (default: dangling)
   JOURNAL_VACUUM_TIME  journalctl --vacuum-time value (default: 30d)
+  VERBOSITY         quiet|normal|verbose (default: normal)
+  CONSOLE_APT_MAX_LINES  Console cap for apt output (default: 80; 0=unlimited)
   ADMIN_EMAIL       Optional email address for completion notification
   CRITICAL_PACKAGES Array of packages to hold during cleanup
 
@@ -1351,7 +1499,10 @@ run_preflight_checks() {
     fi
     printf 'Docker: '
     if has_cmd docker; then printf '%s\n' "present"; else printf '%s\n' "not installed"; fi
-    printf 'SKIP_FIRMWARE: %s  HOLD_NVIDIA: %s  DOCKER_PRUNE: %s\n'         "$SKIP_FIRMWARE" "$HOLD_NVIDIA" "$DOCKER_PRUNE"
+    printf 'SKIP_FIRMWARE: %s  HOLD_NVIDIA: %s  DOCKER_PRUNE: %s\n' \
+        "$SKIP_FIRMWARE" "$HOLD_NVIDIA" "$DOCKER_PRUNE"
+    printf 'VERBOSITY: %s  CONSOLE_APT_MAX_LINES: %s  JOURNAL_VACUUM_TIME: %s\n' \
+        "$VERBOSITY" "$CONSOLE_APT_MAX_LINES" "$JOURNAL_VACUUM_TIME"
 
     printf '%s\n' "=== Checks complete ==="
 }
@@ -1403,6 +1554,26 @@ while [[ $# -gt 0 ]]; do
         --check|--doctor)
             run_preflight_checks
             exit 0
+            ;;
+        --quiet|-q)
+            VERBOSITY=quiet
+            CLI_VERBOSITY=quiet
+            shift
+            ;;
+        --verbose)
+            VERBOSITY=verbose
+            CLI_VERBOSITY=verbose
+            shift
+            ;;
+        --console-lines)
+            shift
+            if [ $# -eq 0 ] || ! [[ "$1" =~ ^[0-9]+$ ]]; then
+                error "--console-lines requires a non-negative number"
+                exit 1
+            fi
+            CONSOLE_APT_MAX_LINES="$1"
+            CLI_CONSOLE_APT_MAX_LINES="$1"
+            shift
             ;;
         --debug)
             DEBUG=true
@@ -1492,6 +1663,8 @@ if $DRY_RUN; then
     info "DRY RUN MODE ENABLED - No changes will be made"
     info "DRY-RUN may still use the network to list upgradable packages"
 fi
+
+info "Verbosity: ${VERBOSITY} (console apt lines max: ${CONSOLE_APT_MAX_LINES}; 0=unlimited)"
 
 # ────────────────────────────────────────────────────────────────
 # Logging (with color stripping for file)
@@ -1688,8 +1861,8 @@ else
     apt_run --purge autoremove || warn "autoremove had issues"
 
     info "Cleaning package cache (autoclean + clean)..."
-    apt-get autoclean 2>&1 | tee -a "${APT_LOG:-/dev/null}" || _record_failure
-    apt-get clean 2>&1 | tee -a "${APT_LOG:-/dev/null}" || _record_failure
+    run_logged_cmd "apt-get autoclean" apt-get autoclean || _record_failure
+    run_logged_cmd "apt-get clean" apt-get clean || _record_failure
 
     if [ "${BACKUP_MODE}" = true ]; then
         create_etc_backup || true

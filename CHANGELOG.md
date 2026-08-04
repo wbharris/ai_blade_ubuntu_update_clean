@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented here.
 
+## [1.2.0] - 2026-08-04
+
+### Added (complete remaining code-review items)
+- **Verbosity levels**: `quiet` | `normal` | `verbose` via `--quiet`/`-q`, `--verbose`, or `VERBOSITY=`
+- **Console apt line cap**: `CONSOLE_APT_MAX_LINES` (default 80; `0` = unlimited) and `--console-lines N`
+- Full apt/dpkg output always archived to `APT_LOG`; console may truncate in normal mode
+- `run_logged_cmd` / `emit_cmd_output` for consistent capture and failure detail
+- **Configurable kernel filters**: `KERNEL_SUFFIX_EXCLUDE_REGEX`, `KERNEL_META_EXCLUDE_REGEX`
+- `safe_run` now captures stderr/stdout, shows tails on failure, archives to APT_LOG
+
+### Changed
+- `apt_run` / `apt-get update` / autoclean / clean use logged command helper (no silent stderr discard on failures)
+
 ## [1.1.1] - 2026-08-04
 
 ### Fixed / hardened (code review)

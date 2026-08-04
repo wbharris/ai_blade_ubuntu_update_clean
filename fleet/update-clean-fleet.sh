@@ -66,6 +66,8 @@ GPU drain policy (before update-clean on a node):
 
   -h, --help
 
+Pass-through tip: add --quiet or --verbose after -- for console noise control on blades.
+
 Everything after -- is passed to update-clean.sh on each node:
   ./update-clean-fleet.sh -f hosts --deploy -- --dry-run
   ./update-clean-fleet.sh -H n1,n2 -- --gpu-only
