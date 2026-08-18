@@ -1,4 +1,9 @@
 # NVIDIA AI Blade Simulation Results
+
+> **Historical.** This is a canned 1.4.5 / 4× H100 write-up.
+> The last real harness run is [`tests/last-results.html`](tests/last-results.html)
+> (`./tests/simulate_nvidia_blade.sh`, mocked 8× H100).
+
 ## update-clean.sh v1.4.5 - GPU-Aware Ubuntu System Maintenance
 
 **Date:** 2026-08-18  

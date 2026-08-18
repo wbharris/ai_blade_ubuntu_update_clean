@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>update-clean last test — 8× H100 simulation</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font: 16px/1.45 system-ui, sans-serif; max-width: 52rem; margin: 2rem auto; padding: 0 1.25rem; }
+    h1 { font-size: 1.6rem; margin-bottom: 0.25rem; }
+    .meta { color: #555; margin-bottom: 1.5rem; }
+    .pass { color: #0a7a2f; font-weight: 700; }
+    .fail { color: #b00020; font-weight: 700; }
+    table { border-collapse: collapse; width: 100%; margin: 1rem 0 1.75rem; }
+    th, td { border: 1px solid #ccc; padding: 0.4rem 0.55rem; text-align: left; vertical-align: top; }
+    th { background: #f3f3f3; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.88rem; }
+    pre { background: #111; color: #e8e8e8; padding: 1rem; overflow: auto; border-radius: 6px; }
+    .note { background: #fff8e1; border: 1px solid #f0d78c; padding: 0.75rem 1rem; }
+  </style>
+</head>
+<body>
+  <h1>Last test results</h1>
+  <p class="meta">
+    <strong>update-clean 1.4.12</strong> · harness <code>tests/simulate_nvidia_blade.sh</code><br>
+    2026-08-18 · mocked 8× NVIDIA H100 80GB · driver 550.127.08 · CUDA 12.4<br>
+    <span class="pass">31 passed, 0 failed</span>
+  </p>
+
+  <p class="note">
+    <code>SIMULATION_RESULTS.md</code> in the repo root is an older canned 4× H100 / v1.4.5 write-up.
+    This page is the last <em>real</em> harness run (the script actually executed).
+  </p>
+
+  <h2>Summary</h2>
+  <table>
+    <thead><tr><th>Spec</th><th>Case</th><th>Result</th></tr></thead>
+    <tbody>
+      <tr><td>Inspect</td><td><code>--version</code> shows driver 550.127.08 and 8 GPUs; no instance lock</td><td class="pass">PASS</td></tr>
+      <tr><td>Inspect</td><td><code>--check</code> idle: 8× H100 inventory, no jobs, no lock</td><td class="pass">PASS</td></tr>
+      <tr><td>Inspect</td><td><code>--check</code> busy: 3 jobs including torchrun</td><td class="pass">PASS</td></tr>
+      <tr><td>1 Quiet GPU</td><td>Idle <code>--quiet</code> is one line; no inventory dump</td><td class="pass">PASS</td></tr>
+      <tr><td>4 Dry-run disk</td><td><code>n/a (dry-run)</code></td><td class="pass">PASS</td></tr>
+      <tr><td>5 One preview</td><td>Single upgrade preview; no duplicate remaining-upgrades</td><td class="pass">PASS</td></tr>
+      <tr><td>3 Hold warning</td><td>nvidia-smi present, no apt NVIDIA packages</td><td class="pass">PASS</td></tr>
+      <tr><td>2 Skip if busy</td><td>Busy dry-run exit 3; no apt</td><td class="pass">PASS</td></tr>
+      <tr><td>2 Override</td><td><code>--no-skip-if-gpu-busy</code> still plans upgrade (exit 0)</td><td class="pass">PASS</td></tr>
+      <tr><td>Inspect</td><td><code>--last</code> does not take the instance lock</td><td class="pass">PASS</td></tr>
+      <tr><td>Lock</td><td>Second instance exit 1, “already running”</td><td class="pass">PASS</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Harness log</h2>
+  <pre>=== NVIDIA AI blade simulation (real update-clean.sh) ===
+
+  PASS  version exit (exit 0)
+  PASS  version driver
+  PASS  version 8 GPUs
+  PASS  version no instance lock
+  PASS  check idle exit (exit 0)
+  PASS  check 8x H100
+  PASS  check idle success
+  PASS  check no instance lock
+  PASS  check busy exit (exit 0)
+  PASS  check busy count
+  PASS  check torchrun
+  PASS  quiet idle exit (exit 0)
+  PASS  quiet one-line GPU
+  PASS  quiet no inventory dump
+  PASS  dry-run disk n/a
+  PASS  single upgrade preview
+  PASS  no duplicate remaining-upgrades
+  PASS  hold-list warning
+  PASS  would apt upgrade
+  PASS  busy skip exit 3 (exit 3)
+  PASS  busy skip message
+  PASS  busy would skip
+  PASS  busy no apt upgrade
+  PASS  busy shows jobs
+  PASS  force busy exit (exit 0)
+  PASS  force proceeds
+  PASS  force plans upgrade
+  PASS  last exit (exit 0)
+  PASS  last no instance lock
+  PASS  lock conflict exit (exit 1)
+  PASS  already running
+
+=== 31 passed, 0 failed ===</pre>
+
+  <p>Re-run: <code>./tests/simulate_nvidia_blade.sh</code></p>
+</body>
+</html>

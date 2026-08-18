@@ -63,7 +63,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now update-clean.timer
 ```
 
-To pin a version, use `.../releases/download/v1.4.10/ai_blade_ubuntu_update_clean-1.4.10.tar.gz` instead.
+To pin a version, use `.../releases/download/v1.4.12/ai_blade_ubuntu_update_clean-1.4.12.tar.gz` instead.
 
 **From git (development):**
 
@@ -148,8 +148,9 @@ Further keys (`VERBOSITY`, `JOURNAL_VACUUM_TIME`, `APT_LOCK_WAIT_SECS`, kernel e
 
 ## Safety
 
-- Root required except `--check` / `--version` / `--last`
-- Needs at least 2 GB free on `/`, `/var`, `/boot`; warns if `/var` has less than 10 GB
+- Root required except `--check` / `--version` / `--last` / `--help`
+- Needs at least 2 GB free on `/` and `/var`. `/boot` hard abort is 100 MB (small EFI partitions are common on blades); warns below 50 MB and skips kernel purge below 10 MB
+- Warns if `/var` has less than 10 GB (typical container-image volume)
 - Keeps the running kernel plus the `KERNEL_KEEP` newest other images. Purge is skipped unless `dpkg` owns `/boot/vmlinuz-$(uname -r)` — custom/unsigned kernels are left alone
 - Holds the GPU stack during autoremove/purge by default
 - Non-critical steps do not abort the run
@@ -252,7 +253,15 @@ tests/                   # NVIDIA blade simulation harness
 scripts/package-release.sh
 ```
 
-`./tests/simulate_nvidia_blade.sh` mocks an 8× H100 node and runs the real script (quiet/busy/skip/lock).
+## Testing
+
+```bash
+./tests/simulate_nvidia_blade.sh
+```
+
+Mocks an 8× NVIDIA H100 blade (`nvidia-smi`, container CLI, fabric) and runs the real script: inspect modes, quiet GPU summary, skip-if-busy (exit 3), force override, dry-run disk `n/a`, hold-list warning, and instance lock. Latest HTML report: [`tests/last-results.html`](tests/last-results.html).
+
+`SIMULATION_RESULTS.md` is a historical 1.4.5 / 4× H100 write-up, not the last harness run.
 
 ## License
 

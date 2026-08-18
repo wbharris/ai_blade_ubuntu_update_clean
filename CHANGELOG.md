@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here.
 
+## [1.4.12] - 2026-08-18
+
+### Changed
+- README: `/boot` hard abort is 100 MB (2 GB still applies to `/` and `/var`); install pin example follows latest; dedicated Testing section
+- `SIMULATION_RESULTS.md` marked as a historical 1.4.5 write-up
+
+### Added
+- `tests/last-results.html` — last 8× H100 harness report (31 passed)
+
 ## [1.4.11] - 2026-08-18
 
 ### Fixed
