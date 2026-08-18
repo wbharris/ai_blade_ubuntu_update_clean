@@ -98,10 +98,12 @@ LAST_RUN_DIR="${LAST_RUN_DIR:-/var/lib/update-clean}"
 CRITICAL_PACKAGES=(base-files base-passwd bash coreutils util-linux)
 readonly SCRIPT_NAME="update-clean"
 # Sidecar VERSION (git tree) wins; embedded fallback for single-file install.
-readonly SCRIPT_VERSION_EMBEDDED="1.4.9"
-_ver_file=$(tr -d '[:space:]' <"$SCRIPT_DIR/VERSION" 2>/dev/null || true)
-SCRIPT_VERSION=${_ver_file:-$SCRIPT_VERSION_EMBEDDED}
-unset _ver_file
+readonly SCRIPT_VERSION_EMBEDDED="1.4.10"
+if [ -r "$SCRIPT_DIR/VERSION" ]; then
+    SCRIPT_VERSION=$(tr -d '[:space:]' <"$SCRIPT_DIR/VERSION")
+else
+    SCRIPT_VERSION=$SCRIPT_VERSION_EMBEDDED
+fi
 readonly SCRIPT_DIR
 EXIT_CODE=0
 REBOOT_DEFERRED=false

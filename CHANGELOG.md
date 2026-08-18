@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here.
 
+## [1.4.10] - 2026-08-17
+
+### Fixed
+- Single-file install no longer warns about a missing sidecar `VERSION` file
+
 ## [1.4.9] - 2026-08-17
 
 ### Fixed
