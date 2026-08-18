@@ -67,7 +67,8 @@ SKIP_GPU_CHECK=false
 # Abort before apt when GPU compute jobs are running (safe default on AI blades).
 # Fleet --drain-mode force passes --no-skip-if-gpu-busy.
 SKIP_IF_GPU_BUSY=${SKIP_IF_GPU_BUSY:-true}
-SKIP_FIRMWARE=${SKIP_FIRMWARE:-true}   # safer default on AI blades (use vendor tooling)
+# true = do not run fwupd (default). --with-firmware / SKIP_FIRMWARE=false enables it.
+SKIP_FIRMWARE=${SKIP_FIRMWARE:-true}
 # Hold installed GPU/accelerator vendor packages during cleanup (when present)
 HOLD_GPU=${HOLD_GPU:-${HOLD_NVIDIA:-true}}  # HOLD_NVIDIA is a deprecated alias
 DOCKER_PRUNE=${DOCKER_PRUNE:-dangling} # none|dangling|unused
@@ -78,7 +79,7 @@ VERBOSITY=${VERBOSITY:-normal}
 CONSOLE_APT_MAX_LINES=${CONSOLE_APT_MAX_LINES:-80}
 LOG_RETENTION=${LOG_RETENTION:-3}
 # Extra versioned linux-image packages to keep besides the running kernel.
-# Default 2 → running + 2 older (3 versioned images). Not an absolute total.
+# Default 2 → running + the 2 newest other images (oldest extras are purged).
 KERNEL_KEEP=${KERNEL_KEEP:-2}
 KERNEL_KEEP_MAX=${KERNEL_KEEP_MAX:-10}
 # Exclude non-versioned / specialty kernel packages from removal candidates (ERE for grep -Ev)
@@ -98,7 +99,7 @@ LAST_RUN_DIR="${LAST_RUN_DIR:-/var/lib/update-clean}"
 CRITICAL_PACKAGES=(base-files base-passwd bash coreutils util-linux)
 readonly SCRIPT_NAME="update-clean"
 # Sidecar VERSION (git tree) wins; embedded fallback for single-file install.
-readonly SCRIPT_VERSION_EMBEDDED="1.4.10"
+readonly SCRIPT_VERSION_EMBEDDED="1.4.11"
 if [ -r "$SCRIPT_DIR/VERSION" ]; then
     SCRIPT_VERSION=$(tr -d '[:space:]' <"$SCRIPT_DIR/VERSION")
 else
@@ -654,6 +655,7 @@ list_installed_kernel_images() {
         | grep -Ev -- "$meta_re" \
         | sort -V \
         || true
+    # sort -V: oldest first. Callers keep the last KERNEL_KEEP extras.
 }
 
 create_etc_backup() {
@@ -1496,15 +1498,15 @@ apt_get_update_with_retries() {
 }
 
 remove_old_kernels() {
-    local -a kernels=()
-    local -a to_remove=()
-    local running_pkg running_ver pkg delcount boot_kb keep
+    local -a kernels=() extras=() keepers=() to_remove=()
+    local running_pkg running_ver pkg boot_kb keep n
 
     if [ -d /boot ]; then
         boot_kb=$(get_avail_kb /boot)
         if [ "$boot_kb" -lt "$BOOT_MIN_KB" ]; then
-            warn "Skipping kernel removal: /boot has ${boot_kb} KB free (need >= ${BOOT_MIN_KB} KB / $((BOOT_MIN_KB / 1024)) MB)"
-            warn "Kernel cleanup skipped (not a failure); free /boot and re-run to purge old kernels"
+            warn "Skipping kernel purge only: /boot has ${boot_kb} KB free (need >= $((BOOT_MIN_KB / 1024)) MB)"
+            warn "The rest of the update continues. Hard abort for /boot is BOOT_DISK_KB=$((BOOT_DISK_KB / 1024)) MB at preflight"
+            warn "Free space on /boot and re-run if you need old kernels removed"
             return 0
         fi
     fi
@@ -1535,6 +1537,7 @@ remove_old_kernels() {
         return 0
     fi
 
+    # extras: oldest-first (sort -V), running kernel excluded
     for pkg in "${kernels[@]}"; do
         if [ -n "$running_pkg" ] && [ "$pkg" = "$running_pkg" ]; then
             continue
@@ -1542,30 +1545,37 @@ remove_old_kernels() {
         if [ -n "$running_ver" ] && [[ "$pkg" == *"$running_ver"* ]]; then
             continue
         fi
-        to_remove+=("$pkg")
+        extras+=("$pkg")
     done
 
     keep="${KERNEL_KEEP:-2}"
+    n=${#extras[@]}
 
-    if [ "${#to_remove[@]}" -le "$keep" ]; then
-        info "No old kernels to remove (keeping $keep beside running kernel)."
+    if [ "$n" -le "$keep" ]; then
+        info "No old kernels to remove (extras=$n, keep $keep newest besides running)."
         return 0
     fi
 
-    delcount=$(( ${#to_remove[@]} - keep ))
-    if [ "$delcount" -lt 1 ] || [ "$delcount" -gt "${#to_remove[@]}" ]; then
-        warn "Kernel removal skipped: delcount=$delcount invalid (candidates=${#to_remove[@]} keep=$keep)"
-        warn "No kernels purged this run (safety gate); check KERNEL_KEEP and installed linux-image packages"
+    # Keep the newest $keep extras; purge the oldest prefix.
+    keepers=("${extras[@]:$((n - keep)):$keep}")
+    to_remove=("${extras[@]:0:$((n - keep))}")
+
+    if [ "${#to_remove[@]}" -lt 1 ]; then
+        warn "Kernel removal skipped: empty purge list (extras=$n keep=$keep)"
         return 0
     fi
     KERNELS_REMOVED=true
 
-    info "Kernels scheduled for removal ($delcount):"
-    for pkg in "${to_remove[@]:0:delcount}"; do
+    info "Keeping running + ${#keepers[@]} newest extra kernel(s):"
+    for pkg in "${keepers[@]}"; do
+        info "  keep $pkg"
+    done
+    info "Kernels scheduled for removal (${#to_remove[@]} oldest):"
+    for pkg in "${to_remove[@]}"; do
         info "  $pkg"
     done
 
-    for pkg in "${to_remove[@]:0:delcount}"; do
+    for pkg in "${to_remove[@]}"; do
         if truthy "${DRY_RUN:-false}"; then
             info "DRY-RUN: Would purge old kernel: $pkg"
             continue
@@ -2274,16 +2284,21 @@ if has_cmd snap; then
     fi
 fi
 
-if truthy "$SKIP_FIRMWARE"; then
-    info "Skipping fwupd firmware updates (SKIP_FIRMWARE=true; use --with-firmware to enable)"
-    info "On managed clusters, prefer vendor/cluster firmware workflows over ad-hoc fwupd"
-elif has_cmd fwupdmgr; then
-    if truthy "${DRY_RUN:-false}"; then
-        info "DRY-RUN: Would update firmware"
+# SKIP_FIRMWARE=true (default) means do not run fwupd. --with-firmware flips it off.
+if ! truthy "${SKIP_FIRMWARE:-true}"; then
+    if has_cmd fwupdmgr; then
+        if truthy "${DRY_RUN:-false}"; then
+            info "DRY-RUN: Would update firmware (fwupd enabled)"
+        else
+            safe_run "Refreshing firmware metadata" fwupdmgr refresh --force
+            safe_run "Applying firmware updates" fwupdmgr update -y || true
+        fi
     else
-        safe_run "Refreshing firmware metadata" fwupdmgr refresh --force
-        safe_run "Applying firmware updates" fwupdmgr update -y || true
+        warn "Firmware updates requested (--with-firmware) but fwupdmgr is not installed"
     fi
+else
+    info "Skipping fwupd (SKIP_FIRMWARE=true; --with-firmware to enable)"
+    info "On managed clusters, prefer vendor/cluster firmware workflows over ad-hoc fwupd"
 fi
 
 # Container image cleanup for AI blades
@@ -2417,7 +2432,7 @@ fi
 if truthy "${DRY_RUN:-false}"; then
     MSG="System update dry-run completed."
 else
-    MSG="System update completed. Freed ${FREED_MB} MB."
+    MSG="System update completed. Freed ${FREED_MB} MB on /, /var, /boot."
 fi
 if [ "$REBOOT_DURING_RUN" = true ]; then
     MSG="$MSG Reboot recommended."
@@ -2438,7 +2453,8 @@ log "GPU driver: ${GPU_DRIVER:-n/a}  runtime: ${GPU_RUNTIME:-n/a}  GPUs: $GPU_CO
 if truthy "${DRY_RUN:-false}"; then
     log "Disk space freed (/, /var, /boot): n/a (dry-run)"
 else
-    log "Disk space freed (/, /var, /boot): ${FREED_MB} MB"
+    log "Disk space change on tracked mounts (/, /var, /boot): ${FREED_MB} MB"
+    log "(Docker/journal/snap/flatpak may free space on other volumes; not included)"
 fi
 log "Failures recorded: $EXIT_CODE"
 if truthy "${REBOOT_DEFERRED:-false}"; then

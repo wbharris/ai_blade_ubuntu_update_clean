@@ -12,7 +12,7 @@ Vendor-agnostic: not affiliated with any GPU or cluster vendor. Optional tools (
 
 **Update:** fix interrupted installs, then `apt-get update` / `upgrade` / `full-upgrade` and `apt-get check`. Mutating work uses **`apt-get`**, not `apt(8)`.
 
-**Cleanup:** purge autoremove, autoclean, residual configs, old kernels (running + `KERNEL_KEEP` older), Snap/Flatpak when present, journal vacuum, partial apt lists, man/locate DBs, GRUB after kernel changes.
+**Cleanup:** purge autoremove, autoclean, residual configs, old kernels (running + the `KERNEL_KEEP` newest extras), Snap/Flatpak when present, journal vacuum, partial apt lists, man/locate DBs, GRUB after kernel changes.
 
 **GPU blade extras (when the tools exist):**
 - Host detection and a GPU health report (inventory, driver, utilization, busy processes)
@@ -130,7 +130,7 @@ Config loads after CLI parsing; explicit flags win.
 | `SKIP_FIRMWARE` | `true` | Skip `fwupd` |
 | `HOLD_GPU` | `true` | Hold GPU/accelerator packages during cleanup (`HOLD_NVIDIA` is a deprecated alias) |
 | `DOCKER_PRUNE` | `dangling` | `none` / `dangling` / `unused` |
-| `KERNEL_KEEP` | `2` | **Additional** old kernels besides the running one (default: running + 2 older) |
+| `KERNEL_KEEP` | `2` | Newest extra kernels to keep besides the running one (oldest extras are purged) |
 | `REBOOT_IF_REQUIRED` | `false` | Auto-reboot; blocked if GPU jobs are active (exit **2**) |
 | `SKIP_IF_GPU_BUSY` | `true` | Do not start apt while GPU jobs are running (exit **3**). Hidden override: `--no-skip-if-gpu-busy` |
 
@@ -140,7 +140,8 @@ Further keys (`VERBOSITY`, `JOURNAL_VACUUM_TIME`, `APT_LOCK_WAIT_SECS`, kernel e
 
 - Logs: `/var/log/update-clean/` (directory mode `700`, files `600`)
 - Instance lock: `/run/update-clean.lock` (fd is closed on exit; the file is left in place)
-- Last run: `/var/lib/update-clean/last-run` (`STATUS` may be `success` / `failure` / `reboot_deferred`)
+- Last run: `/var/lib/update-clean/last-run` (`STATUS` may be `success` / `failure` / `reboot_deferred` / `skipped_busy`)
+- `disk_freed_mb` is the `df` change on `/`, `/var`, and `/boot` only (Docker/journal/snap on other volumes are not included)
 - JSON: `/var/lib/update-clean/last-run.json` — `schema_version` **2**, plus `gpu_driver`, `gpu_runtime`, counts. Written with `jq` when present, otherwise a builtin encoder
 - `sudo ./update-clean.sh --last` prints the record and the last 80 log lines
 - Tests: `UPDATE_CLEAN_SKIP_LOGS=true` (or `CI=true`) writes under `$TMPDIR` instead of `/var/log`
@@ -149,7 +150,7 @@ Further keys (`VERBOSITY`, `JOURNAL_VACUUM_TIME`, `APT_LOCK_WAIT_SECS`, kernel e
 
 - Root required except `--check` / `--version` / `--last`
 - Needs at least 2 GB free on `/`, `/var`, `/boot`; warns if `/var` has less than 10 GB
-- Keeps the running kernel plus `KERNEL_KEEP` older images. Purge is skipped unless `dpkg` owns `/boot/vmlinuz-$(uname -r)` — custom/unsigned kernels are left alone
+- Keeps the running kernel plus the `KERNEL_KEEP` newest other images. Purge is skipped unless `dpkg` owns `/boot/vmlinuz-$(uname -r)` — custom/unsigned kernels are left alone
 - Holds the GPU stack during autoremove/purge by default
 - Non-critical steps do not abort the run
 - Auto-reboot refuses while GPU compute processes are active

@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented here.
 
+## [1.4.11] - 2026-08-18
+
+### Fixed
+- Kernel purge keeps the **newest** `KERNEL_KEEP` extras by version (oldest prefix removed), not an opaque list-length slice
+- Firmware branch polarity documented: `SKIP_FIRMWARE=true` skips fwupd; `--with-firmware` is the allow path
+- `/boot` kernel-skip log now says the update continues (hard abort is still `BOOT_DISK_KB` at preflight)
+- Summary disk figure is labeled as `/` `/var` `/boot` only
+
 ## [1.4.10] - 2026-08-17
 
 ### Fixed
