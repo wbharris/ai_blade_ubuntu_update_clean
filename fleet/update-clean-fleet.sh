@@ -336,6 +336,9 @@ run_one_host() {
             set -e
             if [[ "$rc" -eq 0 ]]; then
                 status="ok"
+            elif [[ "$rc" -eq 2 ]]; then
+                # update-clean: reboot deferred (GPUs busy) — not a failed update
+                status="reboot_deferred"
             else
                 status="fail"
             fi
@@ -422,20 +425,21 @@ main() {
         fi
     } >"$summary"
 
-    local ok=0 fail=0 skip=0 other=0 host status rc logf
+    local ok=0 fail=0 skip=0 deferred=0 other=0 host status rc logf
     while IFS=$'\t' read -r host status rc logf; do
         [[ "$host" == "host" ]] && continue
         [[ -z "$host" ]] && continue
         case "$status" in
             ok|dry_run) ok=$((ok + 1)) ;;
             skipped_busy) skip=$((skip + 1)) ;;
+            reboot_deferred) deferred=$((deferred + 1)) ;;
             fail|deploy_fail|drain_error) fail=$((fail + 1)) ;;
             *) other=$((other + 1)) ;;
         esac
     done <"$summary"
 
     info "=== Fleet summary ==="
-    info "ok=$ok skipped_busy=$skip fail=$fail other=$other"
+    info "ok=$ok skipped_busy=$skip reboot_deferred=$deferred fail=$fail other=$other"
     info "summary: $summary"
     if command -v column >/dev/null 2>&1; then
         column -t -s $'\t' "$summary" || cat "$summary"

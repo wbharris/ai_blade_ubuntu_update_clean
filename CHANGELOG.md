@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here.
 
+## [1.4.3] - 2026-08-17
+
+### Changed
+- Reboot blocked by busy GPUs is exit **2** (`STATUS=reboot_deferred`), not a generic failure (`1`)
+- README lists required/recommended/optional tools, APT lock-probe limits, and exit-code meanings
+- Kernel-map miss logs whether `/boot/vmlinuz-$(uname -r)` exists and how many image candidates were seen
+
 ## [1.4.2] - 2026-08-17
 
 ### Fixed

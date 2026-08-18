@@ -22,7 +22,7 @@
 # BACKUP_MODE=true
 
 # Reboot automatically when /var/run/reboot-required is set (default: false)
-# Still blocked if GPU compute processes are running
+# Still blocked if GPU compute processes are running (process exit 2, not 1)
 # REBOOT_IF_REQUIRED=false
 
 # Skip fwupd firmware updates (default: true on AI/GPU blades)
@@ -49,7 +49,9 @@
 # KERNEL_SUFFIX_EXCLUDE_REGEX='-(meta|dbg|dbgsym|rt|cloud|kvm|virtual)$'
 # KERNEL_META_EXCLUDE_REGEX='linux-image-(generic|generic-hwe|amd64)(-lts|-hwe)?$'
 
-# APT lock wait (seconds) when another apt/dpkg process holds locks
+# APT lock wait (seconds) when another apt/dpkg process holds locks.
+# Install psmisc (fuser) or lsof so holders can be detected; without them
+# leftover lock files are treated as unknown, not held. 0 = fail immediately.
 # APT_LOCK_WAIT_SECS=60
 # APT_LOCK_POLL_SECS=5
 
@@ -61,6 +63,11 @@
 
 # Packages to hold during cleanup (default: base-files base-passwd bash coreutils util-linux)
 # CRITICAL_PACKAGES=(base-files base-passwd bash coreutils util-linux)
+
+# Recommended host packages (not required to start):
+#   psmisc or lsof  — APT lock-holder PIDs
+#   jq              — last-run.json
+# Optional when already present: nvidia-smi, rocm-smi, fwupdmgr, docker, snap, flatpak
 
 # Tests / CI: write logs under $TMPDIR instead of /var/log (also honors CI=true)
 # UPDATE_CLEAN_SKIP_LOGS=true

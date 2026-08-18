@@ -30,7 +30,7 @@
 #     fwupdmgr, curl/wget, fuser/lsof (APT lock holders), logger
 # Config: /etc/update-clean.conf, root or SUDO_USER home configs (see README)
 # Logs: /var/log/update-clean/ (dir 0700, files 0600; UPDATE_CLEAN_SKIP_LOGS or CI=true → $TMPDIR)
-# Exit codes: 0 = success; 1 = one or more failures (count in FAILURES / EXIT_CODE)
+# Exit codes: 0 = success; 1 = step failure(s); 2 = reboot deferred (GPUs busy)
 # last-run.json schema_version: 2 (stable fields; see write_last_run_json)
 #
 # Usage: sudo ./update-clean.sh [--dry-run] [--check] [--help] [--version]
@@ -95,6 +95,7 @@ readonly SCRIPT_NAME="update-clean"
 SCRIPT_VERSION=$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo "unknown")
 readonly SCRIPT_DIR
 EXIT_CODE=0
+REBOOT_DEFERRED=false
 KERNELS_REMOVED=false
 AI_PLATFORM="unknown"
 AI_PLATFORM_DETAIL=""
@@ -1269,7 +1270,7 @@ apt_run() {
         "${args[@]}"
     )
 
-    if ! run_logged_cmd "$desc" env DEBIAN_FRONTEND=noninteractive "${cmd[@]}"; then
+    if ! DEBIAN_FRONTEND=noninteractive run_logged_cmd "$desc" "${cmd[@]}"; then
         _record_failure
         return 1
     fi
@@ -1315,8 +1316,15 @@ remove_old_kernels() {
         info "Running kernel package: $running_pkg ($running_ver)"
     else
         warn "Could not map running kernel (uname -r=${running_ver:-unknown}) to an installed linux-image package"
-        warn "Skipping kernel purge this run (unsigned image, custom packaging, or missing /boot/vmlinuz-${running_ver:-?})"
-        warn "No kernels will be removed; boot a packaged kernel or install the matching linux-image and re-run"
+        if [ -n "$running_ver" ]; then
+            if [ -e "/boot/vmlinuz-${running_ver}" ]; then
+                warn "Found /boot/vmlinuz-${running_ver} but dpkg does not own it (custom/unsigned image?)"
+            else
+                warn "No /boot/vmlinuz-${running_ver} on disk"
+            fi
+        fi
+        warn "Installed linux-image candidates: ${#kernels[@]}"
+        warn "Skipping kernel purge this run so the booted kernel cannot be removed by mistake"
         return 0
     fi
 
@@ -1542,6 +1550,8 @@ Usage: sudo $0 [options]
 
 Kernel keep count, docker prune, GPU package holds, log retention,
 and similar knobs belong in a config file — see update-clean.conf.example.
+
+Exit: 0 ok · 1 step failure(s) · 2 reboot deferred (GPUs busy)
 
 Target: Ubuntu GPU / AI compute hosts (vendor-agnostic)
 USAGE
@@ -2155,8 +2165,8 @@ if [ "$REBOOT_DURING_RUN" = true ]; then
     warn "Reboot is required to complete some updates."
     if truthy "${REBOOT_IF_REQUIRED:-false}" && ! truthy "${DRY_RUN:-false}"; then
         if ! truthy "${SKIP_GPU_CHECK:-false}" && ! guard_reboot_if_gpus_busy; then
-            warn "Reboot deferred because GPUs are busy"
-            _record_failure
+            warn "Reboot deferred because GPUs are busy (exit 2; update itself is not a failure)"
+            REBOOT_DEFERRED=true
         else
             info "REBOOT_IF_REQUIRED set; rebooting now"
             log_to_syslog "Rebooting after $SCRIPT_NAME run"
@@ -2177,12 +2187,17 @@ fi
 
 LAST_RUN_FILE="$LAST_RUN_DIR/last-run"
 RUN_STATUS=success
-[ "$EXIT_CODE" -ne 0 ] && RUN_STATUS=failure
+if [ "$EXIT_CODE" -ne 0 ]; then
+    RUN_STATUS=failure
+elif truthy "${REBOOT_DEFERRED:-false}"; then
+    RUN_STATUS=reboot_deferred
+fi
 
 if ! truthy "${DRY_RUN:-false}"; then
     mkdir -p "$LAST_RUN_DIR"
     RUN_TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
     REBOOT_FLAG=$([ "$REBOOT_DURING_RUN" = true ] && echo "yes" || echo "no")
+    REBOOT_DEFERRED_FLAG=$(truthy "${REBOOT_DEFERRED:-false}" && echo "yes" || echo "no")
     cat > "$LAST_RUN_FILE" << LAST
 VERSION=$SCRIPT_VERSION
 DISTRO=$DISTRO_NAME
@@ -2197,6 +2212,7 @@ STATUS=$RUN_STATUS
 FAILURES=$EXIT_CODE
 DISK_FREED_MB=$FREED_MB
 REBOOT_REQUIRED=$REBOOT_FLAG
+REBOOT_DEFERRED=$REBOOT_DEFERRED_FLAG
 LOG_FILE=$LOG_FILE
 LAST
     write_last_run_json \
@@ -2231,11 +2247,14 @@ MSG="System update completed. Freed ${FREED_MB} MB."
 if [ "$REBOOT_DURING_RUN" = true ]; then
     MSG="$MSG Reboot recommended."
 fi
+if truthy "${REBOOT_DEFERRED:-false}"; then
+    MSG="$MSG Reboot deferred (GPUs busy)."
+fi
 if [ "$EXIT_CODE" -ne 0 ]; then
     MSG="$MSG Some steps reported failures."
 fi
 send_completion_notification "$MSG"
-log_to_syslog "$MSG (failures=$EXIT_CODE)"
+log_to_syslog "$MSG (failures=$EXIT_CODE reboot_deferred=${REBOOT_DEFERRED:-false})"
 
 log "=== Update Summary ==="
 log "Distro: $DISTRO_NAME"
@@ -2243,13 +2262,19 @@ log "AI platform: $AI_PLATFORM${AI_PLATFORM_DETAIL:+ ($AI_PLATFORM_DETAIL)}"
 log "GPU driver: ${GPU_DRIVER:-n/a}  runtime: ${GPU_RUNTIME:-n/a}  GPUs: $GPU_COUNT  busy_procs: $GPU_PROCESS_COUNT"
 log "Disk space freed (/, /var, /boot): ${FREED_MB} MB"
 log "Failures recorded: $EXIT_CODE"
+if truthy "${REBOOT_DEFERRED:-false}"; then
+    log "Reboot deferred: yes (GPUs busy)"
+fi
 log "Full log saved to: $LOG_FILE"
 log "APT warnings logged to: $APT_LOG"
 
-if [ "$EXIT_CODE" -eq 0 ]; then
-    success "Update and cleanup completed successfully!"
-    exit 0
-else
+if [ "$EXIT_CODE" -ne 0 ]; then
     warn "Update and cleanup finished with $EXIT_CODE failure(s)."
     exit 1
 fi
+if truthy "${REBOOT_DEFERRED:-false}"; then
+    warn "Update completed; reboot deferred because GPUs are busy (exit 2)"
+    exit 2
+fi
+success "Update and cleanup completed successfully!"
+exit 0

@@ -44,7 +44,32 @@ sudo ./update-clean.sh --offline
 
 Everything else (kernels to keep, docker prune, GPU holds, log retention, …) is config, not extra flags. See `update-clean.conf.example`.
 
+Requires **Bash 4+** (`#!/usr/bin/env bash`). Do not run under `/bin/sh`. Package work uses **`apt-get`**, not `apt(8)`.
+
 Run weekly during a maintenance window after draining workloads. Do not use `--reboot-if-required` on multi-tenant blades unless orchestration has already drained GPUs.
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success |
+| `1` | One or more steps failed (count is `FAILURES` in the last-run record) |
+| `2` | Update finished; reboot was requested but **deferred** because GPU jobs are still running |
+
+Exit `2` is not a failed update. Monitoring should treat it as “drain GPUs and reboot,” not as a broken run.
+
+### Dependencies
+
+**Required:** `bash` 4+, `apt-get`, `dpkg`, `awk`, `sed`, `grep`, `tar`, `mktemp`, `flock`.
+
+**Recommended (install these):**
+
+| Package / tool | Why |
+|----------------|-----|
+| `psmisc` (`fuser`) or `lsof` | APT lock-holder detection. Without either, leftover lock files are **not** treated as held (best-effort; `apt-get` still fails if a real lock exists). |
+| `jq` | Writes machine-readable `/var/lib/update-clean/last-run.json`. Text last-run is always written. |
+
+**Optional (used only when already installed):** `nvidia-smi` / `rocm-smi` (GPU health and busy-job checks), `fwupdmgr`, `docker`, `flatpak`, `snap`, `needrestart`, `curl` or `wget`, `logger`.
 
 ## Configuration
 
@@ -80,7 +105,7 @@ Further keys (`VERBOSITY`, `JOURNAL_VACUUM_TIME`, kernel exclude regexes, …) a
 
 - Logs: `/var/log/update-clean/` (directory mode `700`, files `600`)
 - Last run: `/var/lib/update-clean/last-run`
-- JSON (when `jq` is installed): `/var/lib/update-clean/last-run.json` — `schema_version` **2**, plus `gpu_driver`, `gpu_runtime`, counts for fleet scrapers
+- JSON (when `jq` is installed): `/var/lib/update-clean/last-run.json` — `schema_version` **2**, plus `gpu_driver`, `gpu_runtime`, counts; `status` may be `success` / `failure` / `reboot_deferred`
 - `sudo ./update-clean.sh --last` prints the record and the last 80 log lines
 - Tests: `UPDATE_CLEAN_SKIP_LOGS=true` (or `CI=true`) writes under `$TMPDIR` instead of `/var/log`
 
