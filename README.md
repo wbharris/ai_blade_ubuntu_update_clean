@@ -220,7 +220,10 @@ fleet/                   # SSH runner
 bcm/                     # optional cmsh/pdsh hooks
 ansible/                 # optional playbook
 .github/workflows/       # ShellCheck + smoke
+tests/                   # NVIDIA blade simulation harness
 ```
+
+`./tests/simulate_nvidia_blade.sh` mocks an 8× H100 node and runs the real script (quiet/busy/skip/lock).
 
 ## License
 

@@ -111,8 +111,9 @@ GPU_DRIVER=""
 GPU_RUNTIME=""   # e.g. CUDA version string when a vendor tool reports it
 
 # Thresholds and retry limits (override via env if needed)
-readonly MIN_DISK_KB=${MIN_DISK_KB:-2097152}       # 2 GB root/var/boot
+readonly MIN_DISK_KB=${MIN_DISK_KB:-2097152}       # 2 GB on / and /var
 readonly MIN_LOG_DIR_KB=${MIN_LOG_DIR_KB:-1024}    # 1 MB
+readonly BOOT_DISK_KB=${BOOT_DISK_KB:-102400}      # 100 MB hard abort on /boot (often a small partition)
 readonly BOOT_MIN_KB=${BOOT_MIN_KB:-10240}         # 10 MB — skip kernel removal
 readonly BOOT_LOW_KB=${BOOT_LOW_KB:-51200}         # 50 MB — low /boot warning
 readonly APT_UPDATE_MAX_RETRIES=${APT_UPDATE_MAX_RETRIES:-3}
@@ -1818,9 +1819,10 @@ run_preflight_checks() {
         printf '%s\n' "FAIL"
     fi
 
-    for part in / /var /boot; do
+    for part in / /var; do
         report_partition_space "$part" "$MIN_DISK_KB"
     done
+    report_partition_space /boot "${BOOT_DISK_KB:-102400}"
 
     printf 'APT lock free: '
     if ! has_cmd fuser && ! has_cmd lsof; then
@@ -2120,9 +2122,10 @@ else
     fi
 fi
 
-for partition in "/" "/var" "/boot"; do
+for partition in "/" "/var"; do
     check_partition_space "$partition" "$MIN_DISK_KB" || exit 1
 done
+check_partition_space "/boot" "${BOOT_DISK_KB:-102400}" || exit 1
 
 warn_low_partition_space "/boot" "$BOOT_LOW_KB"
 warn_low_partition_space "/var" "$VAR_LOW_KB"

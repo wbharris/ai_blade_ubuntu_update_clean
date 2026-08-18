@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented here.
 
+## [1.4.8] - 2026-08-17
+
+### Fixed
+- `/boot` hard abort is 100 MB (`BOOT_DISK_KB`), not 2 GB — matches small `/boot` on blades and CI runners
+
+### Changed
+- `tests/simulate_nvidia_blade.sh` is a real harness (runs `update-clean.sh` against mocked 8× H100 tools)
+
 ## [1.4.7] - 2026-08-17
 
 ### Changed

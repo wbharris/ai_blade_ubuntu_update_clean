@@ -25,6 +25,8 @@ jobs:
           bash -n update-clean.sh
           bash -n fleet/update-clean-fleet.sh
           bash -n bcm/bcm-hooks.sh
+          bash -n tests/simulate_nvidia_blade.sh
+          bash -n tests/run_simulation.sh
 
       - name: CLI smoke (non-root)
         run: |
@@ -38,3 +40,6 @@ jobs:
         run: |
           sudo --preserve-env=UPDATE_CLEAN_SKIP_LOGS,CI \
             ./update-clean.sh --dry-run --offline --no-gpu-check --quiet
+
+      - name: NVIDIA blade simulation
+        run: sudo ./tests/simulate_nvidia_blade.sh
