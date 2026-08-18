@@ -6,7 +6,7 @@
 # Usage:
 #   ansible-playbook -i inventory.ini ansible/update-clean.yml
 #   ansible-playbook -i inventory.ini ansible/update-clean.yml -e dry_run=true
-#   ansible-playbook -i inventory.ini ansible/update-clean.yml -e 'extra_args=--gpu-only'
+#   ansible-playbook -i inventory.ini ansible/update-clean.yml -e 'extra_args=--check'
 #
 # Inventory example (inventory.ini):
 #   [gpu]

@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented here.
 
+## [1.4.0] - 2026-08-17
+
+### Changed
+- Slimmer CLI: `--help` and the README list the flags you actually type
+- `--check` now includes the GPU health report (the documented inspect command)
+- `--last`, `--check`, and `--version` run after config load so they honor config paths
+- Kernel keep count, docker prune, GPU holds, console line cap, and `--debug` stay in config (or as hidden compatibility flags)
+
+### Notes
+- Still accepted, no longer advertised: `--gpu-only`, `--no-gpu-check`, `--keep-kernels`, `--no-firmware`, `--no-hold-gpu`, `--docker-prune`, `--console-lines`, `--debug`, and the aliases `--status`, `--doctor`, `--no-hold-nvidia`
+
 ## [1.3.2] - 2026-08-04
 
 ### Security / robustness (review follow-up)

@@ -33,7 +33,8 @@
 # HOLD_GPU=true
 # HOLD_NVIDIA=true   # deprecated alias for HOLD_GPU
 
-# Docker image prune: none | dangling | unused | all (default: dangling)
+# Docker image prune: none | dangling | unused (default: dangling)
+# unused also drops stopped containers and unused networks. Avoid on shared image caches.
 # DOCKER_PRUNE=dangling
 
 # journalctl vacuum window (default: 30d)
@@ -61,5 +62,9 @@
 # Packages to hold during cleanup (default: base-files base-passwd bash coreutils util-linux)
 # CRITICAL_PACKAGES=(base-files base-passwd bash coreutils util-linux)
 
-# Use --no-kernel on the command line to skip kernel cleanup entirely.
+# One-shot CLI overrides (not extra config keys):
+#   --no-kernel            skip kernel cleanup for this run
+#   --with-firmware        allow fwupd this run
+#   --reboot-if-required   reboot if /var/run/reboot-required is set
+#   --offline              skip the network check
 # /etc/update-clean.conf must be owned by root when installed system-wide.

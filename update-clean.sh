@@ -22,7 +22,7 @@
 #
 # Requirements:
 #   - Bash 4+ (mapfile, ${var,,}, associative arrays)
-#   - Root for full update path (sudo); --gpu-only works unprivileged with reduced detail
+#   - Root for full update path (sudo); --check / --version work unprivileged
 #   - apt-based Ubuntu/Debian (GPU servers and AI compute blades)
 #   - Required commands: apt-get, dpkg, awk, sed, grep, tar, mktemp, flock
 #   - Optional: GPU vendor CLIs (e.g. nvidia-smi when installed), jq, docker,
@@ -32,7 +32,7 @@
 # Exit codes: 0 = success; 1 = one or more failures (count in FAILURES / EXIT_CODE)
 # last-run.json schema_version: 2 (stable fields; see write_last_run_json)
 #
-# Usage: sudo ./update-clean.sh [--dry-run] [--no-kernel] [--help] [--version]
+# Usage: sudo ./update-clean.sh [--dry-run] [--check] [--help] [--version]
 # Recommended: run weekly during maintenance windows on GPU/AI blades
 
 set -euo pipefail
@@ -130,6 +130,9 @@ CLI_DOCKER_PRUNE=""
 CLI_GPU_ONLY=false
 CLI_VERBOSITY=""
 CLI_CONSOLE_APT_MAX_LINES=""
+CLI_CHECK=false
+CLI_LAST=false
+CLI_SHOW_VERSION=false
 
 # ────────────────────────────────────────────────────────────────
 # Colors (TTY-aware)
@@ -1480,52 +1483,22 @@ usage() {
     cat << USAGE
 Usage: sudo $0 [options]
 
-Options:
-  --dry-run         Simulate actions without making changes
-  --no-kernel       Skip old kernel removal
-  --keep-kernels N  Keep N kernels besides running (default: 2; 0 = only running)
-  --reboot-if-required  Reboot automatically when required (blocked if GPUs busy)
-  --offline         Skip internet connectivity checks
-  --no-gpu-check    Skip GPU health / busy checks
-  --gpu-only        Report AI/GPU host health only, then exit
-                    (works without root; systemctl/dmidecode detail may be limited)
-  --no-firmware     Skip fwupd firmware updates (default on AI blades)
-  --with-firmware   Allow fwupd firmware updates
-  --no-hold-gpu     Do not apt-mark hold GPU vendor packages during cleanup
-  --no-hold-nvidia  Deprecated alias for --no-hold-gpu
-  --docker-prune MODE  none|dangling|unused|all (default: dangling)
-  --last, --status  Show information from the last run
-  --check, --doctor Run pre-flight checks only (no updates)
-  --quiet, -q       Quiet console (apt details only on failure; full log on disk)
-  --verbose         Full apt/dpkg output on console
-  --console-lines N Cap apt lines on console in normal mode (default: 80; 0=unlimited)
-  --debug           Enable shell trace (set -x) for troubleshooting
-  --help, -h        Show this help
-  --version, -v     Show version information
+  --dry-run              Plan only; make no changes
+  --check                Pre-flight + GPU health, then exit
+  --last                 Show the last run
+  -q, --quiet            Less console output
+  --verbose              Full apt output on the console
+  --no-kernel            Leave old kernels installed
+  --offline              Skip the network check
+  --with-firmware        Allow fwupd (off by default)
+  --reboot-if-required   Reboot if needed (blocked while GPUs are busy)
+  -h, --help             Show this help
+  -v, --version          Show version
 
-Environment / Config:
-  LOG_RETENTION     Number of logs to keep (default: 3)
-  KERNEL_KEEP       Kernels to keep besides running (default: 2, max 10)
-  KERNEL_SUFFIX_EXCLUDE_REGEX  grep -Ev pattern for specialty kernels
-  KERNEL_META_EXCLUDE_REGEX    grep -Ev pattern for meta packages
-  LOG_DIR           Log directory (default: /var/log/update-clean)
-  LOCKFILE          Instance lock file (default: /run/update-clean.lock)
-  LAST_RUN_DIR      Last-run record directory (default: /var/lib/update-clean)
-  BACKUP_MODE       Backup /etc before purging configs (default: false)
-  REBOOT_IF_REQUIRED Reboot automatically if required (default: false)
-  SKIP_FIRMWARE     Skip fwupd (default: true on AI blades)
-  HOLD_GPU          Hold GPU vendor packages during cleanup (default: true)
-  HOLD_NVIDIA       Deprecated alias for HOLD_GPU
-  DOCKER_PRUNE      none|dangling|unused|all (default: dangling)
-  JOURNAL_VACUUM_TIME  journalctl --vacuum-time value (default: 30d)
-  VERBOSITY         quiet|normal|verbose (default: normal)
-  CONSOLE_APT_MAX_LINES  Console cap for apt output (default: 80; 0=unlimited)
-  GPU_CLI_TIMEOUT_SECS Timeout for vendor GPU CLIs (default: 10)
-  ADMIN_EMAIL       Optional email address for completion notification
-  CRITICAL_PACKAGES Array of packages to hold during cleanup
+Kernel keep count, docker prune, GPU package holds, log retention,
+and similar knobs belong in a config file — see update-clean.conf.example.
 
-Target platforms:
-  Ubuntu GPU servers, AI/ML compute blades, multi-GPU rack nodes (vendor-agnostic)
+Target: Ubuntu GPU / AI compute hosts (vendor-agnostic)
 USAGE
 }
 
@@ -1629,23 +1602,14 @@ run_preflight_checks() {
     fi
 
     detect_ai_platform
-    printf 'AI platform: %s%s\n' "$AI_PLATFORM" "${AI_PLATFORM_DETAIL:+ ($AI_PLATFORM_DETAIL)}"
-    printf 'GPU tooling: '
-    if has_cmd nvidia-smi || has_cmd rocm-smi; then
-        printf 'OK\n'
-        query_gpu_driver || true
-        count_gpu_compute_processes
-        printf 'Driver: %s  runtime: %s  GPUs: %s  Busy procs: %s\n' \
-            "${GPU_DRIVER:-?}" "${GPU_RUNTIME:-?}" "$GPU_COUNT" "$GPU_PROCESS_COUNT"
-    else
-        printf 'none detected\n'
-    fi
     printf 'Docker: '
     if has_cmd docker; then printf '%s\n' "present"; else printf '%s\n' "not installed"; fi
     printf 'SKIP_FIRMWARE: %s  HOLD_GPU: %s  DOCKER_PRUNE: %s\n' \
         "$SKIP_FIRMWARE" "$HOLD_GPU" "$DOCKER_PRUNE"
-    printf 'VERBOSITY: %s  CONSOLE_APT_MAX_LINES: %s  JOURNAL_VACUUM_TIME: %s\n' \
-        "$VERBOSITY" "$CONSOLE_APT_MAX_LINES" "$JOURNAL_VACUUM_TIME"
+
+    if ! truthy "${SKIP_GPU_CHECK:-false}"; then
+        report_gpu_health || true
+    fi
 
     printf '%s\n' "=== Checks complete ==="
 }
@@ -1662,6 +1626,8 @@ while [[ $# -gt 0 ]]; do
             CLI_SKIP_KERNEL=true
             shift
             ;;
+        # Compatibility flags below are accepted but not advertised in --help.
+        # Prefer config (KERNEL_KEEP, DOCKER_PRUNE, HOLD_GPU, VERBOSITY, …).
         --keep-kernels)
             shift
             if [ $# -eq 0 ]; then
@@ -1691,12 +1657,12 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --last|--status)
-            show_last_run
-            exit 0
+            CLI_LAST=true
+            shift
             ;;
         --check|--doctor)
-            run_preflight_checks
-            exit 0
+            CLI_CHECK=true
+            shift
             ;;
         --quiet|-q)
             VERBOSITY=quiet
@@ -1763,8 +1729,8 @@ while [[ $# -gt 0 ]]; do
             exit 0
             ;;
         --version|-v)
-            show_version
-            exit 0
+            CLI_SHOW_VERSION=true
+            shift
             ;;
         *)
             error "Unknown option: $1"
@@ -1777,6 +1743,17 @@ done
 load_config_files
 apply_cli_config_overrides
 validate_config_values
+
+if truthy "${CLI_LAST:-false}"; then
+    show_last_run
+    exit 0
+fi
+
+if truthy "${CLI_SHOW_VERSION:-false}"; then
+    show_version
+    exit 0
+fi
+
 require_cmds
 
 export DEBIAN_FRONTEND=noninteractive
@@ -1789,6 +1766,11 @@ detect_ai_platform
 if truthy "${DEBUG:-false}"; then
     set -x
     info "Debug mode enabled (set -x)"
+fi
+
+if truthy "${CLI_CHECK:-false}"; then
+    run_preflight_checks
+    exit 0
 fi
 
 if truthy "${GPU_ONLY:-false}"; then

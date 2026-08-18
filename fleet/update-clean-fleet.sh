@@ -9,7 +9,7 @@
 # and optional cmsh category inventory (see ../bcm/).
 #
 # Usage:
-#   ./fleet/update-clean-fleet.sh -f fleet/hosts.example --gpu-only
+#   ./fleet/update-clean-fleet.sh -f fleet/hosts.example -- --check
 #   ./fleet/update-clean-fleet.sh -H node001,node002 -- --dry-run
 #   ./fleet/update-clean-fleet.sh -f hosts --parallel 4 --drain-mode wait --drain-wait 600
 #   ./fleet/update-clean-fleet.sh --from-bcm-category gpu -- --check
@@ -70,7 +70,7 @@ Pass-through tip: add --quiet or --verbose after -- for console noise control on
 
 Everything after -- is passed to update-clean.sh on each node:
   ./update-clean-fleet.sh -f hosts --deploy -- --dry-run
-  ./update-clean-fleet.sh -H n1,n2 -- --gpu-only
+  ./update-clean-fleet.sh -H n1,n2 -- --check
   ./update-clean-fleet.sh -f hosts --drain-mode wait --drain-wait 3600 --
 
 Environment: SSH_USER REMOTE_PATH PARALLEL DRAIN_MODE DRAIN_WAIT_SEC DRAIN_POLL_SEC
