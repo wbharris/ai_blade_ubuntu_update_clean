@@ -97,7 +97,11 @@ LAST_RUN_DIR="${LAST_RUN_DIR:-/var/lib/update-clean}"
 # Base OS packages always held; GPU vendor packages held dynamically when HOLD_GPU=true
 CRITICAL_PACKAGES=(base-files base-passwd bash coreutils util-linux)
 readonly SCRIPT_NAME="update-clean"
-SCRIPT_VERSION=$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo "unknown")
+# Sidecar VERSION (git tree) wins; embedded fallback for single-file install.
+readonly SCRIPT_VERSION_EMBEDDED="1.4.9"
+_ver_file=$(tr -d '[:space:]' <"$SCRIPT_DIR/VERSION" 2>/dev/null || true)
+SCRIPT_VERSION=${_ver_file:-$SCRIPT_VERSION_EMBEDDED}
+unset _ver_file
 readonly SCRIPT_DIR
 EXIT_CODE=0
 REBOOT_DEFERRED=false

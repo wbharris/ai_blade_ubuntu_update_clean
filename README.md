@@ -53,7 +53,7 @@ Requires **Bash 4+** (`#!/usr/bin/env bash`). Do not run under `/bin/sh`.
 **From the latest [GitHub Release](https://github.com/wbharris/ai_blade_ubuntu_update_clean/releases/latest):**
 
 ```bash
-ver=1.4.8   # or a newer tag from the releases page
+ver=1.4.9   # or a newer tag from the releases page
 curl -fsSL -o "ai_blade_ubuntu_update_clean-${ver}.tar.gz" \
   "https://github.com/wbharris/ai_blade_ubuntu_update_clean/releases/download/v${ver}/ai_blade_ubuntu_update_clean-${ver}.tar.gz"
 tar -xzf "ai_blade_ubuntu_update_clean-${ver}.tar.gz"

@@ -8,6 +8,11 @@ VER=$(tr -d '[:space:]' <"$ROOT/VERSION")
     printf 'Invalid VERSION: %s\n' "$VER" >&2
     exit 1
 }
+embedded=$(sed -n 's/^readonly SCRIPT_VERSION_EMBEDDED="\([^"]*\)".*/\1/p' "$ROOT/update-clean.sh" | head -n1)
+if [ "$embedded" != "$VER" ]; then
+    printf 'VERSION=%s but SCRIPT_VERSION_EMBEDDED=%s\n' "$VER" "$embedded" >&2
+    exit 1
+fi
 
 NAME="ai_blade_ubuntu_update_clean-${VER}"
 OUTDIR="${1:-$ROOT/dist}"

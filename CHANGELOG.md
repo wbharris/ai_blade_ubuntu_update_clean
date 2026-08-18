@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here.
 
+## [1.4.9] - 2026-08-17
+
+### Fixed
+- `--version` no longer prints `unknown` after `install` to `/usr/local/sbin` (version is embedded in the script)
+
 ## [1.4.8] - 2026-08-17
 
 ### Fixed
