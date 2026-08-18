@@ -1010,8 +1010,10 @@ write_last_run_json() {
 }
 
 check_debian_based() {
-    if ! has_cmd apt; then
-        error "This script requires apt and is intended for Debian-based systems."
+    # Runtime work uses apt-get. Minimal/container images often ship apt-get
+    # without the newer apt(8) wrapper — do not require apt.
+    if ! has_cmd apt-get && ! has_cmd apt; then
+        error "This script requires apt-get (or apt) and is intended for Debian-based systems."
         exit 1
     fi
 
@@ -1633,7 +1635,7 @@ run_preflight_checks() {
 
     printf 'Required tools: '
     local missing=""
-    for tool in apt dpkg; do
+    for tool in apt-get dpkg; do
         if ! has_cmd "$tool"; then
             missing="$missing $tool"
         fi

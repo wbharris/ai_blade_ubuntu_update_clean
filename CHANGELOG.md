@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here.
 
+## [1.4.2] - 2026-08-17
+
+### Fixed
+- `check_debian_based` and `--check` accept `apt-get` without the `apt` wrapper (minimal/container images)
+
 ## [1.4.1] - 2026-08-17
 
 ### Fixed / hardened (code review)
