@@ -33,5 +33,8 @@ jobs:
           ./update-clean.sh --check --offline || true
 
       - name: Dry-run smoke (root)
+        env:
+          UPDATE_CLEAN_SKIP_LOGS: "true"
         run: |
-          sudo ./update-clean.sh --dry-run --offline --no-gpu-check --quiet
+          sudo --preserve-env=UPDATE_CLEAN_SKIP_LOGS,CI \
+            ./update-clean.sh --dry-run --offline --no-gpu-check --quiet

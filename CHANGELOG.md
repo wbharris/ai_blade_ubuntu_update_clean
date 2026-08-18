@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here.
 
+## [1.4.1] - 2026-08-17
+
+### Fixed / hardened (code review)
+- `apt_lock_held` no longer treats leftover lock files as held when `fuser`/`lsof` are missing (unknown ≠ locked)
+- `LOG_DIR` chmod 700 is required; do not fall back to 755
+- `err_trap` only diagnoses; the EXIT trap owns lock teardown and exit
+- Clearer proxy logs (redacted URL) when `http(s)_proxy` or apt-config proxy is in use
+- Unmatched running kernel always skips purge (covers `uname -r` failure, unsigned/custom images)
+- `write_last_run_json` skips cleanly when `jq` is missing
+- Read-only upgrade previews use `apt-get -s` instead of `apt list`
+- CI / `UPDATE_CLEAN_SKIP_LOGS` writes logs under a private temp dir instead of `/var/log`
+
 ## [1.4.0] - 2026-08-17
 
 ### Changed

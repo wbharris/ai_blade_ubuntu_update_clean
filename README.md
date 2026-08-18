@@ -78,19 +78,21 @@ Further keys (`VERBOSITY`, `JOURNAL_VACUUM_TIME`, kernel exclude regexes, …) a
 
 ## Logging
 
-- Logs: `/var/log/update-clean/`
+- Logs: `/var/log/update-clean/` (directory mode `700`, files `600`)
 - Last run: `/var/lib/update-clean/last-run`
 - JSON (when `jq` is installed): `/var/lib/update-clean/last-run.json` — `schema_version` **2**, plus `gpu_driver`, `gpu_runtime`, counts for fleet scrapers
 - `sudo ./update-clean.sh --last` prints the record and the last 80 log lines
+- Tests: `UPDATE_CLEAN_SKIP_LOGS=true` (or `CI=true`) writes under `$TMPDIR` instead of `/var/log`
 
 ## Safety
 
 - Root required except `--check` / `--version`
 - Needs at least 2 GB free on `/`, `/var`, `/boot`; warns if `/var` has less than 10 GB
-- Keeps current + previous kernel
+- Keeps current + previous kernel; skips purge if the running kernel cannot be mapped to a package
 - Holds the GPU stack during autoremove/purge by default
 - Non-critical steps do not abort the run
 - Auto-reboot refuses while GPU compute processes are active
+- APT lock-holder detection needs `fuser` (psmisc) or `lsof`; without them leftover lock files are not treated as held
 
 ## Scheduling
 

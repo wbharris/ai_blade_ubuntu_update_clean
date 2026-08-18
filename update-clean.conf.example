@@ -62,6 +62,9 @@
 # Packages to hold during cleanup (default: base-files base-passwd bash coreutils util-linux)
 # CRITICAL_PACKAGES=(base-files base-passwd bash coreutils util-linux)
 
+# Tests / CI: write logs under $TMPDIR instead of /var/log (also honors CI=true)
+# UPDATE_CLEAN_SKIP_LOGS=true
+
 # One-shot CLI overrides (not extra config keys):
 #   --no-kernel            skip kernel cleanup for this run
 #   --with-firmware        allow fwupd this run

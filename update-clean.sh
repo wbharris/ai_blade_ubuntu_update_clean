@@ -25,10 +25,11 @@
 #   - Root for full update path (sudo); --check / --version work unprivileged
 #   - apt-based Ubuntu/Debian (GPU servers and AI compute blades)
 #   - Required commands: apt-get, dpkg, awk, sed, grep, tar, mktemp, flock
+#   - Mutating package work uses apt-get (not apt(8)); previews use apt-get -s
 #   - Optional: GPU vendor CLIs (e.g. nvidia-smi when installed), jq, docker,
-#     fwupdmgr, curl/wget, fuser/lsof, logger
+#     fwupdmgr, curl/wget, fuser/lsof (APT lock holders), logger
 # Config: /etc/update-clean.conf, root or SUDO_USER home configs (see README)
-# Logs: /var/log/update-clean/ (retention via LOG_RETENTION); mode 0600
+# Logs: /var/log/update-clean/ (dir 0700, files 0600; UPDATE_CLEAN_SKIP_LOGS or CI=true → $TMPDIR)
 # Exit codes: 0 = success; 1 = one or more failures (count in FAILURES / EXIT_CODE)
 # last-run.json schema_version: 2 (stable fields; see write_last_run_json)
 #
@@ -133,6 +134,8 @@ CLI_CONSOLE_APT_MAX_LINES=""
 CLI_CHECK=false
 CLI_LAST=false
 CLI_SHOW_VERSION=false
+APT_LOCK_PROBE_WARNED=false
+ERR_DIAGNOSED=false
 
 # ────────────────────────────────────────────────────────────────
 # Colors (TTY-aware)
@@ -175,6 +178,8 @@ run_with_timeout() {
 
 # Create a private temp file via mktemp only (no predictable paths / symlink races).
 # Prefer LOG_DIR, then TMPDIR, then /tmp. Fails hard if mktemp cannot create a file.
+# The file is mode 0600. Callers must delete it; do not assume the parent dir is 0700
+# (LOG_DIR is 0700 when we created it; TMPDIR//tmp may be 1777).
 safe_mktemp() {
     local prefix="${1:-update-clean}"
     local dir candidate
@@ -463,8 +468,11 @@ format_cmd_args() {
     printf '%s' "${out%" "}"
 }
 
-# apt_lock_held: returns 0 when an apt/dpkg lock is held, 1 when free.
+# apt_lock_held: returns 0 when an apt/dpkg lock is held, 1 when free or unknown.
 # Prefer this name over "is_apt_locked" (return 0 = held, not "success free").
+# Without fuser/lsof we cannot tell a live holder from a leftover lock file, so
+# we return "not held" (unknown) rather than aborting on stale files. apt-get
+# still fails later if a real lock is held.
 apt_lock_held() {
     local locks=(
         /var/lib/dpkg/lock-frontend
@@ -492,11 +500,10 @@ apt_lock_held() {
         return 1
     fi
 
-    for lock in "${locks[@]}"; do
-        if [ -e "$lock" ]; then
-            return 0
-        fi
-    done
+    if ! truthy "${APT_LOCK_PROBE_WARNED:-false}"; then
+        warn "Cannot probe APT lock holders (install psmisc or lsof); treating locks as unknown, not held"
+        APT_LOCK_PROBE_WARNED=true
+    fi
     return 1
 }
 
@@ -512,6 +519,11 @@ report_apt_lock_holders() {
         /var/cache/apt/archives/lock
     )
     local lock pids
+
+    if ! has_cmd fuser && ! has_cmd lsof; then
+        warn "Cannot list APT lock holders without fuser or lsof"
+        return 0
+    fi
 
     for lock in "${locks[@]}"; do
         [ -e "$lock" ] || continue
@@ -931,6 +943,7 @@ guard_reboot_if_gpus_busy() {
 
 # Write stable last-run.json (schema_version in LAST_RUN_JSON_SCHEMA).
 # Numeric fields use --argjson; failures surface on APT_LOG / stderr (not discarded).
+# Missing jq is a skip (return 0), not a caller-checked precondition.
 write_last_run_json() {
     local out="$1"
     local version="$2" distro="$3" platform="$4" driver="$5" cuda="$6"
@@ -938,6 +951,11 @@ write_last_run_json() {
     local freed="${12}" reboot="${13}" logf="${14}"
     local jq_err schema
     local apt_log="${APT_LOG:-/dev/null}"
+
+    if ! has_cmd jq; then
+        warn "jq not installed — skipping last-run.json (text last-run record is still written)"
+        return 0
+    fi
 
     schema="${LAST_RUN_JSON_SCHEMA:-1}"
     # Guard non-numeric JSON fields that --argjson requires
@@ -1007,6 +1025,16 @@ check_debian_based() {
     esac
 }
 
+# Redact userinfo in a proxy URL for logs (http://user:pass@host → http://***@host).
+_proxy_display() {
+    local u="${https_proxy:-${HTTPS_PROXY:-${http_proxy:-${HTTP_PROXY:-}}}}"
+    if [ -z "$u" ]; then
+        printf '%s' "none"
+        return 0
+    fi
+    printf '%s' "$u" | sed -E 's#(://)[^/@]+@#\1***@#'
+}
+
 # Load apt Acquire::http(s)::Proxy into env if not already set (restricted nets).
 load_apt_proxy_env() {
     local conf_out http_p https_p
@@ -1034,6 +1062,9 @@ load_apt_proxy_env() {
         export https_proxy="$http_p"
         export HTTPS_PROXY="$http_p"
     fi
+    if [ -n "${http_proxy:-}${https_proxy:-}" ]; then
+        info "Loaded APT Acquire proxy into environment (from apt-config): $(_proxy_display)"
+    fi
 }
 
 check_connectivity() {
@@ -1042,6 +1073,10 @@ check_connectivity() {
     local -a wget_opts=( -q --timeout=5 --spider )
 
     load_apt_proxy_env
+
+    if [ "$(_proxy_display)" != "none" ]; then
+        info "Connectivity probe using proxy: $(_proxy_display)"
+    fi
 
     # curl/wget honor http_proxy/https_proxy/HTTP_PROXY/HTTPS_PROXY when set
     if has_cmd curl; then
@@ -1061,8 +1096,7 @@ check_connectivity() {
     fi
 
     if [ -n "${http_proxy:-}${HTTP_PROXY:-}${https_proxy:-}${HTTPS_PROXY:-}" ]; then
-        info "Proxy env present (http_proxy/https_proxy); HTTPS archive probe failed — relying on apt"
-        # Proxy environments often block direct archive HTTPS; apt may still work.
+        info "Direct HTTPS to $host failed; proxy is set ($(_proxy_display)) so apt-get may still reach the archive"
         return 0
     fi
 
@@ -1085,6 +1119,9 @@ check_connectivity() {
     return 1
 }
 
+# Map uname -r to an installed linux-image package (vmlinuz owner, then name match).
+# Returns 1 when the booted kernel is unsigned/custom and cannot be matched —
+# callers must skip purge so the running kernel cannot be removed by mistake.
 find_running_kernel_pkg() {
     local running_ver="$1"
     shift
@@ -1274,8 +1311,10 @@ remove_old_kernels() {
 
     if [ -n "$running_pkg" ]; then
         info "Running kernel package: $running_pkg ($running_ver)"
-    elif [ -n "$running_ver" ]; then
-        warn "Could not match installed package for running kernel $running_ver; skipping kernel removal"
+    else
+        warn "Could not map running kernel (uname -r=${running_ver:-unknown}) to an installed linux-image package"
+        warn "Skipping kernel purge this run (unsigned image, custom packaging, or missing /boot/vmlinuz-${running_ver:-?})"
+        warn "No kernels will be removed; boot a packaged kernel or install the matching linux-image and re-run"
         return 0
     fi
 
@@ -1328,8 +1367,8 @@ remove_old_kernels() {
 show_dry_run_preview() {
     local apt_log="${APT_LOG:-/dev/null}"
 
-    info "DRY-RUN preview: upgradable packages (read-only)"
-    apt list --upgradable 2>/dev/null | sed -n '1,40p' || true
+    info "DRY-RUN preview: upgradable packages (apt-get -s upgrade, read-only)"
+    apt-get -s upgrade 2>/dev/null | sed -n '1,40p' || true
     info "DRY-RUN preview: autoremove simulation (read-only)"
     apt-get -s --purge autoremove 2>&1 | sed -n '1,40p' | tee -a "$apt_log" || true
 }
@@ -1403,7 +1442,11 @@ hold_critical_packages() {
 
     curpkg=$(find_running_kernel_pkg "$(uname -r)" || true)
     to_hold=("${CRITICAL_PACKAGES[@]}")
-    [ -n "$curpkg" ] && to_hold+=("$curpkg")
+    if [ -n "$curpkg" ]; then
+        to_hold+=("$curpkg")
+    else
+        warn "Could not map running kernel to a linux-image package; not adding it to the hold list"
+    fi
     [ "${#to_hold[@]}" -eq 0 ] && return 0
     apt-mark hold "${to_hold[@]}" 2>/dev/null || true
 }
@@ -1791,6 +1834,15 @@ fi
 
 info "Verbosity: ${VERBOSITY} (console apt lines max: ${CONSOLE_APT_MAX_LINES}; 0=unlimited)"
 
+# CI / test runs: keep logs out of /var/log (CI=true is set by GitHub Actions).
+if truthy "${UPDATE_CLEAN_SKIP_LOGS:-false}" || truthy "${CI:-false}"; then
+    _ci_log=$(mktemp -d "${TMPDIR:-/tmp}/update-clean-ci.XXXXXX") \
+        || { printf '%s\n' "Cannot create temporary log directory" >&2; exit 1; }
+    LOG_DIR="$_ci_log"
+    LAST_RUN_DIR="$_ci_log"
+    info "CI/skip-logs: writing logs under $LOG_DIR"
+fi
+
 # ────────────────────────────────────────────────────────────────
 # Logging (with color stripping for file)
 # ────────────────────────────────────────────────────────────────
@@ -1799,8 +1851,12 @@ if ! mkdir -p "$LOG_DIR"; then
     printf '%s\n' "Failed to create log directory $LOG_DIR" >&2
     exit 1
 fi
-# Restrict directory on multi-tenant hosts; files inside are 0600
-chmod 700 "$LOG_DIR" 2>/dev/null || chmod 755 "$LOG_DIR"
+# Restrict directory on multi-tenant hosts; files inside are 0600. Do not
+# fall back to a more permissive mode if chmod 700 fails.
+if ! chmod 700 "$LOG_DIR" 2>/dev/null; then
+    printf '%s\n' "Cannot set $LOG_DIR to mode 700 (refusing to relax permissions)" >&2
+    exit 1
+fi
 
 if [ ! -w "$LOG_DIR" ]; then
     printf '%s\n' "Log directory $LOG_DIR is not writable" >&2
@@ -1900,11 +1956,13 @@ fi
 
 err_trap() {
     local rc=$?
+    # Diagnose only — do not exit. The EXIT trap (cleanup) tears down and exits.
     # Avoid name clash with arrays named cmd elsewhere (SC2178/SC2128)
     local failing_cmd=${BASH_COMMAND:-}
     local lineno=${BASH_LINENO[0]:-?}
     local i
 
+    ERR_DIAGNOSED=true
     _record_failure
     error "Unhandled error (rc=$rc) while running: '$failing_cmd' at or near line $lineno"
     if [ "${#BASH_SOURCE[@]}" -gt 1 ]; then
@@ -1913,7 +1971,6 @@ err_trap() {
             error "  ${BASH_SOURCE[i]}:${BASH_LINENO[i - 1]} ${FUNCNAME[i]:-main}"
         done
     fi
-    exit "$rc"
 }
 
 cleanup() {
@@ -1925,6 +1982,7 @@ cleanup() {
     exec 200>&- 2>/dev/null || true
     rm -f "$LOCKFILE" 2>/dev/null || true
     if [ "$rc" -ne 0 ]; then
+        # err_trap already printed the failing command when ERR_DIAGNOSED is set
         error "Script exited with status $rc"
     fi
     exit "$rc"
@@ -1964,8 +2022,8 @@ fi
 info "Upgrading packages..."
 apt_run upgrade || warn "apt upgrade had issues"
 
-info "Listing upgradable packages after initial upgrade:"
-apt list --upgradable 2>/dev/null || true
+info "Remaining upgrades after initial upgrade (apt-get -s upgrade, read-only):"
+apt-get -s upgrade 2>/dev/null | sed -n '1,40p' || true
 
 if truthy "${DRY_RUN:-false}"; then
     show_dry_run_preview
@@ -2139,24 +2197,22 @@ DISK_FREED_MB=$FREED_MB
 REBOOT_REQUIRED=$REBOOT_FLAG
 LOG_FILE=$LOG_FILE
 LAST
-    if has_cmd jq; then
-        write_last_run_json \
-            "$LAST_RUN_DIR/last-run.json" \
-            "$SCRIPT_VERSION" \
-            "$DISTRO_NAME" \
-            "$AI_PLATFORM" \
-            "${GPU_DRIVER:-}" \
-            "${GPU_RUNTIME:-}" \
-            "${GPU_COUNT:-0}" \
-            "${GPU_PROCESS_COUNT:-0}" \
-            "$RUN_TIMESTAMP" \
-            "$RUN_STATUS" \
-            "$EXIT_CODE" \
-            "$FREED_MB" \
-            "$REBOOT_FLAG" \
-            "$LOG_FILE" \
-            || warn "Failed to write $LAST_RUN_DIR/last-run.json"
-    fi
+    write_last_run_json \
+        "$LAST_RUN_DIR/last-run.json" \
+        "$SCRIPT_VERSION" \
+        "$DISTRO_NAME" \
+        "$AI_PLATFORM" \
+        "${GPU_DRIVER:-}" \
+        "${GPU_RUNTIME:-}" \
+        "${GPU_COUNT:-0}" \
+        "${GPU_PROCESS_COUNT:-0}" \
+        "$RUN_TIMESTAMP" \
+        "$RUN_STATUS" \
+        "$EXIT_CODE" \
+        "$FREED_MB" \
+        "$REBOOT_FLAG" \
+        "$LOG_FILE" \
+        || warn "Failed to write $LAST_RUN_DIR/last-run.json"
     info "Last run record written to $LAST_RUN_FILE"
 else
     info "DRY-RUN: Would write last-run record"
