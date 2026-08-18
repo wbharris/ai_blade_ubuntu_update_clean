@@ -10,7 +10,8 @@
 # Number of log files to retain (default: 3)
 # LOG_RETENTION=10
 
-# Kernels to keep in addition to the running kernel (default: 2, max 10)
+# Additional old kernels to keep besides the running one (default: 2, max 10).
+# Example: KERNEL_KEEP=2 keeps running + 2 older versioned linux-image packages.
 # KERNEL_KEEP=2
 
 # Optional path overrides

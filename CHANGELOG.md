@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented here.
 
+## [1.4.4] - 2026-08-17
+
+### Fixed / hardened
+- Instance `flock` is taken before log files and preflight, so two runs cannot race
+- Warn once if `timeout(1)` is missing (GPU CLIs can hang)
+
+### Changed
+- `KERNEL_KEEP` wording: additional old kernels besides the running one (default running + 2)
+- Stronger APT lock-probe warning when `fuser`/`lsof` are absent
+
 ## [1.4.3] - 2026-08-17
 
 ### Changed

@@ -74,6 +74,8 @@ VERBOSITY=${VERBOSITY:-normal}
 # Max apt/dpkg lines printed to console in normal mode (0 = unlimited). Full output always in APT_LOG.
 CONSOLE_APT_MAX_LINES=${CONSOLE_APT_MAX_LINES:-80}
 LOG_RETENTION=${LOG_RETENTION:-3}
+# Extra versioned linux-image packages to keep besides the running kernel.
+# Default 2 → running + 2 older (3 versioned images). Not an absolute total.
 KERNEL_KEEP=${KERNEL_KEEP:-2}
 KERNEL_KEEP_MAX=${KERNEL_KEEP_MAX:-10}
 # Exclude non-versioned / specialty kernel packages from removal candidates (ERE for grep -Ev)
@@ -137,6 +139,7 @@ CLI_LAST=false
 CLI_SHOW_VERSION=false
 APT_LOCK_PROBE_WARNED=false
 ERR_DIAGNOSED=false
+TIMEOUT_MISSING_WARNED=false
 
 # ────────────────────────────────────────────────────────────────
 # Colors (TTY-aware)
@@ -174,7 +177,59 @@ run_with_timeout() {
         timeout --signal=TERM --kill-after=2 "$secs" "$@"
         return $?
     fi
+    if ! truthy "${TIMEOUT_MISSING_WARNED:-false}"; then
+        warn "timeout(1) not found — vendor GPU CLIs may hang (install coreutils)"
+        TIMEOUT_MISSING_WARNED=true
+    fi
     "$@"
+}
+
+err_trap() {
+    local rc=$?
+    # Diagnose only — do not exit. The EXIT trap (cleanup) tears down and exits.
+    # Avoid name clash with arrays named cmd elsewhere (SC2178/SC2128)
+    local failing_cmd=${BASH_COMMAND:-}
+    local lineno=${BASH_LINENO[0]:-?}
+    local i
+
+    ERR_DIAGNOSED=true
+    _record_failure
+    error "Unhandled error (rc=$rc) while running: '$failing_cmd' at or near line $lineno"
+    if [ "${#BASH_SOURCE[@]}" -gt 1 ]; then
+        error "Call stack (most recent call last):"
+        for ((i = 1; i < ${#BASH_SOURCE[@]}; i++)); do
+            error "  ${BASH_SOURCE[i]}:${BASH_LINENO[i - 1]} ${FUNCNAME[i]:-main}"
+        done
+    fi
+}
+
+cleanup() {
+    trap - INT TERM EXIT ERR
+
+    local rc=${1:-$?}
+    sync 2>/dev/null || true
+    flock -u 200 2>/dev/null || true
+    exec 200>&- 2>/dev/null || true
+    rm -f "$LOCKFILE" 2>/dev/null || true
+    if [ "$rc" -ne 0 ]; then
+        # err_trap already printed the failing command when ERR_DIAGNOSED is set
+        error "Script exited with status $rc"
+    fi
+    exit "$rc"
+}
+
+# Exclusive instance lock. Must succeed before LOG_DIR/preflight so two
+# copies cannot race through health checks and create parallel log files.
+# Traps are armed only after flock succeeds so a failed acquire does not
+# delete another instance's lockfile.
+acquire_instance_lock() {
+    exec 200>"$LOCKFILE" || { error "Cannot open lockfile $LOCKFILE"; exit 1; }
+    if ! flock -n 200; then
+        error "Another instance of $SCRIPT_NAME is already running ($LOCKFILE)."
+        exit 1
+    fi
+    trap 'err_trap' ERR
+    trap 'cleanup $?' INT TERM EXIT
 }
 
 # Create a private temp file via mktemp only (no predictable paths / symlink races).
@@ -502,7 +557,8 @@ apt_lock_held() {
     fi
 
     if ! truthy "${APT_LOCK_PROBE_WARNED:-false}"; then
-        warn "Cannot probe APT lock holders (install psmisc or lsof); treating locks as unknown, not held"
+        warn "Cannot probe APT lock holders (install psmisc or lsof); leftover lock files will not block this run"
+        warn "If apt-get then fails with a lock error, install psmisc/lsof or set APT_LOCK_WAIT_SECS and retry"
         APT_LOCK_PROBE_WARNED=true
     fi
     return 1
@@ -1537,7 +1593,7 @@ usage() {
 Usage: sudo $0 [options]
 
   --dry-run              Plan only; make no changes
-  --check                Pre-flight + GPU health, then exit
+  --check                Pre-flight + GPU health, then exit (needs apt-get)
   --last                 Show the last run
   -q, --quiet            Less console output
   --verbose              Full apt output on the console
@@ -1839,9 +1895,17 @@ if truthy "${GPU_ONLY:-false}"; then
     exit 0
 fi
 
+# Full update path: lock before logs/preflight so two instances cannot race.
+if [ "$EUID" -ne 0 ]; then
+    error "This script must be run as root (use sudo)."
+    exit 1
+fi
+acquire_instance_lock
+
 if truthy "${DRY_RUN:-false}"; then
     info "DRY RUN MODE ENABLED - No changes will be made"
     info "DRY-RUN may still use the network to list upgradable packages"
+    info "DRY-RUN still writes a log file (no package changes)"
 fi
 
 info "Verbosity: ${VERBOSITY} (console apt lines max: ${CONSOLE_APT_MAX_LINES}; 0=unlimited)"
@@ -1902,11 +1966,6 @@ SCRIPT_START=$(date +%s)
 # ────────────────────────────────────────────────────────────────
 # Pre-flight checks
 # ────────────────────────────────────────────────────────────────
-if [ "$EUID" -ne 0 ]; then
-    error "This script must be run as root (use sudo)."
-    exit 1
-fi
-
 if truthy "${SKIP_CONNECTIVITY:-false}"; then
     warn "Skipping internet connectivity check (--offline)"
 else
@@ -1956,52 +2015,6 @@ if ! check_systemd_resolved; then
 fi
 
 BEFORE=$(get_used_kb_for_paths / /var /boot)
-
-# ────────────────────────────────────────────────────────────────
-# File lock + trap
-# ────────────────────────────────────────────────────────────────
-exec 200>"$LOCKFILE" || { error "Cannot open lockfile $LOCKFILE"; exit 1; }
-if ! flock -n 200; then
-    error "Another instance of $SCRIPT_NAME is already running."
-    exit 1
-fi
-
-err_trap() {
-    local rc=$?
-    # Diagnose only — do not exit. The EXIT trap (cleanup) tears down and exits.
-    # Avoid name clash with arrays named cmd elsewhere (SC2178/SC2128)
-    local failing_cmd=${BASH_COMMAND:-}
-    local lineno=${BASH_LINENO[0]:-?}
-    local i
-
-    ERR_DIAGNOSED=true
-    _record_failure
-    error "Unhandled error (rc=$rc) while running: '$failing_cmd' at or near line $lineno"
-    if [ "${#BASH_SOURCE[@]}" -gt 1 ]; then
-        error "Call stack (most recent call last):"
-        for ((i = 1; i < ${#BASH_SOURCE[@]}; i++)); do
-            error "  ${BASH_SOURCE[i]}:${BASH_LINENO[i - 1]} ${FUNCNAME[i]:-main}"
-        done
-    fi
-}
-
-cleanup() {
-    trap - INT TERM EXIT ERR
-
-    local rc=${1:-$?}
-    sync 2>/dev/null || true
-    flock -u 200 2>/dev/null || true
-    exec 200>&- 2>/dev/null || true
-    rm -f "$LOCKFILE" 2>/dev/null || true
-    if [ "$rc" -ne 0 ]; then
-        # err_trap already printed the failing command when ERR_DIAGNOSED is set
-        error "Script exited with status $rc"
-    fi
-    exit "$rc"
-}
-
-trap 'err_trap' ERR
-trap 'cleanup $?' INT TERM EXIT
 
 # ────────────────────────────────────────────────────────────────
 # Core update
@@ -2073,7 +2086,7 @@ fi
 if truthy "${SKIP_KERNEL:-false}"; then
     info "Skipping old kernel removal (--no-kernel)."
 else
-    info "Removing old kernels (keeping current + previous)..."
+    info "Removing old kernels (keeping running + ${KERNEL_KEEP} older)..."
     remove_old_kernels
 fi
 

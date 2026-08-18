@@ -12,7 +12,7 @@ Vendor-agnostic: not affiliated with any GPU or cluster vendor. Optional tools (
 
 **Update:** fix interrupted installs, then `apt update` / `upgrade` / `full-upgrade` and `apt-get check`.
 
-**Cleanup:** purge autoremove, autoclean, residual configs, old kernels (current + previous kept), Snap/Flatpak when present, journal vacuum, partial apt lists, man/locate DBs, GRUB after kernel changes.
+**Cleanup:** purge autoremove, autoclean, residual configs, old kernels (running + `KERNEL_KEEP` older), Snap/Flatpak when present, journal vacuum, partial apt lists, man/locate DBs, GRUB after kernel changes.
 
 **GPU blade extras (when the tools exist):**
 - Host detection and a GPU health report (inventory, driver, utilization, busy processes)
@@ -30,7 +30,7 @@ sudo ./update-clean.sh
 
 ```bash
 sudo ./update-clean.sh --dry-run
-sudo ./update-clean.sh --check                 # pre-flight + GPU health
+sudo ./update-clean.sh --check                 # pre-flight + GPU health (needs apt-get/dpkg)
 sudo ./update-clean.sh --last
 sudo ./update-clean.sh --no-kernel
 sudo ./update-clean.sh --with-firmware         # fwupd is off by default
@@ -68,6 +68,7 @@ Exit `2` is not a failed update. Monitoring should treat it as “drain GPUs and
 |----------------|-----|
 | `psmisc` (`fuser`) or `lsof` | APT lock-holder detection. Without either, leftover lock files are **not** treated as held (best-effort; `apt-get` still fails if a real lock exists). |
 | `jq` | Writes machine-readable `/var/lib/update-clean/last-run.json`. Text last-run is always written. |
+| `coreutils` (`timeout`) | Caps vendor GPU CLI hangs. Without it, `nvidia-smi` / `rocm-smi` can block the run. |
 
 **Optional (used only when already installed):** `nvidia-smi` / `rocm-smi` (GPU health and busy-job checks), `fwupdmgr`, `docker`, `flatpak`, `snap`, `needrestart`, `curl` or `wget`, `logger`.
 
@@ -94,16 +95,16 @@ Config loads after CLI parsing; explicit flags win.
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `SKIP_FIRMWARE` | `true` | Skip `fwupd` |
-| `HOLD_GPU` | `true` | Hold GPU/accelerator packages during cleanup |
+| `HOLD_GPU` | `true` | Hold GPU/accelerator packages during cleanup (`HOLD_NVIDIA` is a deprecated alias) |
 | `DOCKER_PRUNE` | `dangling` | `none` / `dangling` / `unused` |
-| `KERNEL_KEEP` | `2` | Extra kernels kept besides the running one |
+| `KERNEL_KEEP` | `2` | **Additional** old kernels to keep besides the running one (default: running + 2 older) |
 | `REBOOT_IF_REQUIRED` | `false` | Auto-reboot; blocked if GPU jobs are active |
 
 Further keys (`VERBOSITY`, `JOURNAL_VACUUM_TIME`, kernel exclude regexes, …) are documented in `update-clean.conf.example`.
 
 ## Logging
 
-- Logs: `/var/log/update-clean/` (directory mode `700`, files `600`)
+- Logs: `/var/log/update-clean/` (directory mode `700`, files `600`). A second instance is refused before a log is created. `--dry-run` still writes a log.
 - Last run: `/var/lib/update-clean/last-run`
 - JSON (when `jq` is installed): `/var/lib/update-clean/last-run.json` — `schema_version` **2**, plus `gpu_driver`, `gpu_runtime`, counts; `status` may be `success` / `failure` / `reboot_deferred`
 - `sudo ./update-clean.sh --last` prints the record and the last 80 log lines
@@ -111,10 +112,10 @@ Further keys (`VERBOSITY`, `JOURNAL_VACUUM_TIME`, kernel exclude regexes, …) a
 
 ## Safety
 
-- Root required except `--check` / `--version`
+- Root required except `--check` / `--version` / `--last`. `--check` still needs `apt-get`, `dpkg`, and the other required commands.
 - Needs at least 2 GB free on `/`, `/var`, `/boot`; warns if `/var` has less than 10 GB
-- Keeps current + previous kernel; skips purge if the running kernel cannot be mapped to a package
-- Holds the GPU stack during autoremove/purge by default
+- Keeps the running kernel plus `KERNEL_KEEP` older images (default 2). Purge is skipped unless `dpkg` owns `/boot/vmlinuz-$(uname -r)` — custom/unsigned kernels are left alone.
+- Holds the GPU stack during autoremove/purge by default (`HOLD_GPU=true`)
 - Non-critical steps do not abort the run
 - Auto-reboot refuses while GPU compute processes are active
 - APT lock-holder detection needs `fuser` (psmisc) or `lsof`; without them leftover lock files are not treated as held
