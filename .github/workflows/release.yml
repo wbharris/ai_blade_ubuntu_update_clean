@@ -38,13 +38,14 @@ jobs:
           ' CHANGELOG.md > /tmp/notes.md
           {
             echo
-            echo "Install:"
+            echo "Install (always the latest release):"
             echo
             echo '```bash'
-            echo "curl -fsSL -o ai_blade_ubuntu_update_clean-${ver}.tar.gz \\"
-            echo "  https://github.com/${GITHUB_REPOSITORY}/releases/download/v${ver}/ai_blade_ubuntu_update_clean-${ver}.tar.gz"
-            echo "tar -xzf ai_blade_ubuntu_update_clean-${ver}.tar.gz"
-            echo "sudo install -m 755 ai_blade_ubuntu_update_clean-${ver}/update-clean.sh /usr/local/sbin/update-clean.sh"
+            echo "curl -fsSL -o ai_blade_ubuntu_update_clean.tar.gz \\"
+            echo "  https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/ai_blade_ubuntu_update_clean.tar.gz"
+            echo "tar -xzf ai_blade_ubuntu_update_clean.tar.gz"
+            echo "cd ai_blade_ubuntu_update_clean"
+            echo "sudo install -m 755 update-clean.sh /usr/local/sbin/update-clean.sh"
             echo '```'
           } >> /tmp/notes.md
 
@@ -53,7 +54,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag="$GITHUB_REF_NAME"
-          assets=(dist/ai_blade_ubuntu_update_clean-*.tar.gz dist/ai_blade_ubuntu_update_clean-*.tar.gz.sha256)
+          assets=(
+            dist/ai_blade_ubuntu_update_clean.tar.gz
+            dist/ai_blade_ubuntu_update_clean.tar.gz.sha256
+            dist/ai_blade_ubuntu_update_clean-*.tar.gz
+            dist/ai_blade_ubuntu_update_clean-*.tar.gz.sha256
+          )
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" "${assets[@]}" --clobber
           else

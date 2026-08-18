@@ -50,19 +50,20 @@ Requires **Bash 4+** (`#!/usr/bin/env bash`). Do not run under `/bin/sh`.
 
 ## Install
 
-**From the latest [GitHub Release](https://github.com/wbharris/ai_blade_ubuntu_update_clean/releases/latest):**
+**From the latest [GitHub Release](https://github.com/wbharris/ai_blade_ubuntu_update_clean/releases/latest)** (no version pin):
 
 ```bash
-ver=1.4.10   # or a newer tag from the releases page
-curl -fsSL -o "ai_blade_ubuntu_update_clean-${ver}.tar.gz" \
-  "https://github.com/wbharris/ai_blade_ubuntu_update_clean/releases/download/v${ver}/ai_blade_ubuntu_update_clean-${ver}.tar.gz"
-tar -xzf "ai_blade_ubuntu_update_clean-${ver}.tar.gz"
-cd "ai_blade_ubuntu_update_clean-${ver}"
+curl -fsSL -o ai_blade_ubuntu_update_clean.tar.gz \
+  https://github.com/wbharris/ai_blade_ubuntu_update_clean/releases/latest/download/ai_blade_ubuntu_update_clean.tar.gz
+tar -xzf ai_blade_ubuntu_update_clean.tar.gz
+cd ai_blade_ubuntu_update_clean
 sudo install -m 755 update-clean.sh /usr/local/sbin/update-clean.sh
 sudo cp systemd/update-clean.service systemd/update-clean.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now update-clean.timer
 ```
+
+To pin a version, use `.../releases/download/v1.4.10/ai_blade_ubuntu_update_clean-1.4.10.tar.gz` instead.
 
 **From git (development):**
 

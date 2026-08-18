@@ -6,6 +6,7 @@ All notable changes to this project are documented here.
 
 ### Fixed
 - Single-file install no longer warns about a missing sidecar `VERSION` file
+- Install docs use `/releases/latest/download/ai_blade_ubuntu_update_clean.tar.gz` (no version pin)
 
 ## [1.4.9] - 2026-08-17
 

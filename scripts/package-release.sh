@@ -15,6 +15,7 @@ if [ "$embedded" != "$VER" ]; then
 fi
 
 NAME="ai_blade_ubuntu_update_clean-${VER}"
+STABLE="ai_blade_ubuntu_update_clean"
 OUTDIR="${1:-$ROOT/dist}"
 STAGE=$(mktemp -d)
 # shellcheck disable=SC2064
@@ -37,9 +38,14 @@ cp -a "$ROOT/systemd" "$ROOT/fleet" "$ROOT/bcm" "$ROOT/ansible" "$ROOT/tests" \
 # Do not ship helper/dev-only files
 rm -f "$STAGE/$NAME/cleanup-push.sh" 2>/dev/null || true
 
+# Versioned archive (pin a release) and stable name (releases/latest/download/...)
 TARBALL="$OUTDIR/${NAME}.tar.gz"
 tar -C "$STAGE" -czf "$TARBALL" "$NAME"
-(cd "$OUTDIR" && sha256sum "$(basename "$TARBALL")" >"${NAME}.tar.gz.sha256")
+cp -a "$STAGE/$NAME" "$STAGE/$STABLE"
+STABLE_TAR="$OUTDIR/${STABLE}.tar.gz"
+tar -C "$STAGE" -czf "$STABLE_TAR" "$STABLE"
 
-printf '%s\n' "$TARBALL"
-printf '%s\n' "$OUTDIR/${NAME}.tar.gz.sha256"
+(cd "$OUTDIR" && sha256sum "$(basename "$TARBALL")" >"${NAME}.tar.gz.sha256")
+(cd "$OUTDIR" && sha256sum "$(basename "$STABLE_TAR")" >"${STABLE}.tar.gz.sha256")
+
+printf '%s\n' "$TARBALL" "$OUTDIR/${NAME}.tar.gz.sha256" "$STABLE_TAR" "$OUTDIR/${STABLE}.tar.gz.sha256"
