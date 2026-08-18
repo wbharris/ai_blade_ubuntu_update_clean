@@ -242,6 +242,7 @@ Environment:
 Example maintenance window:
   ./bcm/bcm-hooks.sh maintenance gpu "weekly update-clean" start
   ./fleet/update-clean-fleet.sh --from-bcm-category gpu --deploy --parallel 4 --
+  # inspect first:  ... --from-bcm-category gpu -- --check
   ./bcm/bcm-hooks.sh maintenance gpu end
 EOF
 }

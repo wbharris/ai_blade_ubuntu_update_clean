@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here.
 
+## [1.4.6] - 2026-08-17
+
+### Changed
+- README matches 1.4.5 behavior: `apt-get`, instance lock, exit 2, inspect modes, fleet/Ansible status
+- Fleet `--help` documents `reboot_deferred` and fleet exit codes
+- Ansible treats update-clean exit 2 as success (reboot deferred), not a failed task
+
 ## [1.4.5] - 2026-08-17
 
 ### Fixed / hardened

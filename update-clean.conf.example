@@ -67,7 +67,8 @@
 
 # Recommended host packages (not required to start):
 #   psmisc or lsof  — APT lock-holder PIDs
-#   jq              — last-run.json
+#   coreutils timeout — cap vendor GPU CLI hangs
+#   jq              — preferred last-run.json encoder (builtin fallback if missing)
 # Optional when already present: nvidia-smi, rocm-smi, fwupdmgr, docker, snap, flatpak
 
 # Tests / CI: write logs under $TMPDIR instead of /var/log (also honors CI=true)

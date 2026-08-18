@@ -67,6 +67,11 @@ GPU drain policy (before update-clean on a node):
   -h, --help
 
 Pass-through tip: add --quiet or --verbose after -- for console noise control on blades.
+Inspect with -- --check (no instance lock on the node). Do not pass --reboot-if-required
+unless the category is already drained.
+
+Node rc 2 (reboot deferred / GPUs busy) is status reboot_deferred, not fail.
+Fleet exits: 0 ok · 1 any fail · 2 every node skipped_busy
 
 Everything after -- is passed to update-clean.sh on each node:
   ./update-clean-fleet.sh -f hosts --deploy -- --dry-run

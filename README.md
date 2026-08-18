@@ -10,14 +10,14 @@ Vendor-agnostic: not affiliated with any GPU or cluster vendor. Optional tools (
 
 ## What it does
 
-**Update:** fix interrupted installs, then `apt update` / `upgrade` / `full-upgrade` and `apt-get check`.
+**Update:** fix interrupted installs, then `apt-get update` / `upgrade` / `full-upgrade` and `apt-get check`. Mutating work uses **`apt-get`**, not `apt(8)`.
 
 **Cleanup:** purge autoremove, autoclean, residual configs, old kernels (running + `KERNEL_KEEP` older), Snap/Flatpak when present, journal vacuum, partial apt lists, man/locate DBs, GRUB after kernel changes.
 
 **GPU blade extras (when the tools exist):**
 - Host detection and a GPU health report (inventory, driver, utilization, busy processes)
-- Hold common GPU/accelerator packages during cleanup
-- Block auto-reboot while GPU compute jobs are running
+- Hold common GPU/accelerator packages during cleanup (`HOLD_GPU=true`)
+- Block auto-reboot while GPU compute jobs are running (process **exit 2**, not 1)
 - Docker prune of dangling images (safe default)
 - Firmware updates **off** (`SKIP_FIRMWARE=true`) — use site/vendor procedures on managed fleets
 - Low-space warning on `/var` (typical container-image volume)
@@ -30,21 +30,23 @@ sudo ./update-clean.sh
 
 ```bash
 sudo ./update-clean.sh --dry-run
-sudo ./update-clean.sh --check                 # pre-flight + GPU health (needs apt-get/dpkg)
+sudo ./update-clean.sh --check                 # pre-flight + GPU health (needs apt-get/dpkg; no lock)
 sudo ./update-clean.sh --last
 sudo ./update-clean.sh --no-kernel
 sudo ./update-clean.sh --with-firmware         # fwupd is off by default
-sudo ./update-clean.sh --reboot-if-required    # still blocked if GPUs are busy
+sudo ./update-clean.sh --reboot-if-required    # still blocked if GPUs are busy (exit 2)
 sudo ./update-clean.sh --quiet
 sudo ./update-clean.sh --verbose
 sudo ./update-clean.sh --offline
 ```
 
-`--dry-run` skips `apt-get update` and logs planned apt commands. It may still use the network for read-only listings.
+`--dry-run` skips `apt-get update` and logs planned apt commands. It may still use the network for read-only listings, and it still writes a log.
+
+Inspect modes (`--check`, `--last`, `--version`) do **not** take the instance lock. A full run takes `/run/update-clean.lock` **before** creating logs so two copies cannot race.
 
 Everything else (kernels to keep, docker prune, GPU holds, log retention, …) is config, not extra flags. See `update-clean.conf.example`.
 
-Requires **Bash 4+** (`#!/usr/bin/env bash`). Do not run under `/bin/sh`. Package work uses **`apt-get`**, not `apt(8)`.
+Requires **Bash 4+** (`#!/usr/bin/env bash`). Do not run under `/bin/sh`.
 
 Run weekly during a maintenance window after draining workloads. Do not use `--reboot-if-required` on multi-tenant blades unless orchestration has already drained GPUs.
 
@@ -56,17 +58,17 @@ Run weekly during a maintenance window after draining workloads. Do not use `--r
 | `1` | One or more steps failed (count is `FAILURES` in the last-run record) |
 | `2` | Update finished; reboot was requested but **deferred** because GPU jobs are still running |
 
-Exit `2` is not a failed update. Monitoring should treat it as “drain GPUs and reboot,” not as a broken run.
+Exit `2` is not a failed update. Monitoring, fleet, and Ansible treat it as “drain GPUs and reboot.”
 
 ### Dependencies
 
-**Required:** `bash` 4+, `apt-get`, `dpkg`, `awk`, `sed`, `grep`, `tar`, `mktemp`, `flock`.
+**Required:** `bash` 4+, `apt-get`, `dpkg`, `awk`, `sed`, `grep`, `tar`, `mktemp`, `flock`. `--check` needs the same tools.
 
 **Recommended (install these):**
 
 | Package / tool | Why |
 |----------------|-----|
-| `psmisc` (`fuser`) or `lsof` | APT lock-holder detection. Without either, leftover lock files are **not** treated as held (best-effort; `apt-get` still fails if a real lock exists). |
+| `psmisc` (`fuser`) or `lsof` | APT lock-holder detection. Without either, leftover lock files are **not** treated as held (`apt-get` still fails if a real lock exists). |
 | `jq` | Preferred encoder for `/var/lib/update-clean/last-run.json`. A builtin encoder is used if `jq` is missing. |
 | `coreutils` (`timeout`) | Caps vendor GPU CLI hangs. Without it, `nvidia-smi` / `rocm-smi` can block the run. |
 
@@ -97,25 +99,26 @@ Config loads after CLI parsing; explicit flags win.
 | `SKIP_FIRMWARE` | `true` | Skip `fwupd` |
 | `HOLD_GPU` | `true` | Hold GPU/accelerator packages during cleanup (`HOLD_NVIDIA` is a deprecated alias) |
 | `DOCKER_PRUNE` | `dangling` | `none` / `dangling` / `unused` |
-| `KERNEL_KEEP` | `2` | **Additional** old kernels to keep besides the running one (default: running + 2 older) |
-| `REBOOT_IF_REQUIRED` | `false` | Auto-reboot; blocked if GPU jobs are active |
+| `KERNEL_KEEP` | `2` | **Additional** old kernels besides the running one (default: running + 2 older) |
+| `REBOOT_IF_REQUIRED` | `false` | Auto-reboot; blocked if GPU jobs are active (exit **2**) |
 
-Further keys (`VERBOSITY`, `JOURNAL_VACUUM_TIME`, kernel exclude regexes, …) are documented in `update-clean.conf.example`.
+Further keys (`VERBOSITY`, `JOURNAL_VACUUM_TIME`, `APT_LOCK_WAIT_SECS`, kernel exclude regexes, …) are documented in `update-clean.conf.example`.
 
 ## Logging
 
-- Logs: `/var/log/update-clean/` (directory mode `700`, files `600`). A second instance is refused before a log is created. `--dry-run` still writes a log.
-- Last run: `/var/lib/update-clean/last-run`
-- JSON: `/var/lib/update-clean/last-run.json` — `schema_version` **2**, plus `gpu_driver`, `gpu_runtime`, counts; `status` may be `success` / `failure` / `reboot_deferred`. Written with `jq` when present, otherwise a builtin encoder.
+- Logs: `/var/log/update-clean/` (directory mode `700`, files `600`)
+- Instance lock: `/run/update-clean.lock` (fd is closed on exit; the file is left in place)
+- Last run: `/var/lib/update-clean/last-run` (`STATUS` may be `success` / `failure` / `reboot_deferred`)
+- JSON: `/var/lib/update-clean/last-run.json` — `schema_version` **2**, plus `gpu_driver`, `gpu_runtime`, counts. Written with `jq` when present, otherwise a builtin encoder
 - `sudo ./update-clean.sh --last` prints the record and the last 80 log lines
 - Tests: `UPDATE_CLEAN_SKIP_LOGS=true` (or `CI=true`) writes under `$TMPDIR` instead of `/var/log`
 
 ## Safety
 
-- Root required except `--check` / `--version` / `--last`. `--check` still needs `apt-get`, `dpkg`, and the other required commands.
+- Root required except `--check` / `--version` / `--last`
 - Needs at least 2 GB free on `/`, `/var`, `/boot`; warns if `/var` has less than 10 GB
-- Keeps the running kernel plus `KERNEL_KEEP` older images (default 2). Purge is skipped unless `dpkg` owns `/boot/vmlinuz-$(uname -r)` — custom/unsigned kernels are left alone.
-- Holds the GPU stack during autoremove/purge by default (`HOLD_GPU=true`)
+- Keeps the running kernel plus `KERNEL_KEEP` older images. Purge is skipped unless `dpkg` owns `/boot/vmlinuz-$(uname -r)` — custom/unsigned kernels are left alone
+- Holds the GPU stack during autoremove/purge by default
 - Non-critical steps do not abort the run
 - Auto-reboot refuses while GPU compute processes are active
 - APT lock-holder detection needs `fuser` (psmisc) or `lsof`; without them leftover lock files are not treated as held
@@ -128,7 +131,7 @@ Weekly, Sunday 04:00:
 0 4 * * 0 /path/to/update-clean.sh
 ```
 
-Or the bundled timer:
+Or the bundled timer (does **not** pass `--reboot-if-required`):
 
 ```bash
 sudo cp update-clean.sh /usr/local/sbin/update-clean.sh
@@ -146,7 +149,7 @@ On multi-node fleets, use the fleet runner, `cmsh`/`pdsh`, or Ansible — not un
 ```bash
 cp fleet/hosts.example fleet/hosts
 
-# Inspect
+# Inspect (no instance lock on the node)
 ./fleet/update-clean-fleet.sh -f fleet/hosts -- --check
 
 # Deploy + dry-run, 4 nodes at a time; skip busy GPUs
@@ -158,9 +161,18 @@ cp fleet/hosts.example fleet/hosts
 
 Drain modes: `skip` (default), `wait`, `force`. Per-run logs and `summary.tsv` land in `fleet-runs/<timestamp>/` (gitignored).
 
+| Node / row status | Meaning |
+|-------------------|---------|
+| `ok` / `dry_run` | Succeeded |
+| `skipped_busy` | Drain policy skipped the node (GPUs in use) |
+| `reboot_deferred` | Node update finished; reboot blocked (update-clean **exit 2**) |
+| `fail` / `deploy_fail` / `drain_error` | Real failure |
+
+Fleet process exits: **0** if nothing failed, **1** if any node failed, **2** if every node was `skipped_busy`. `reboot_deferred` is not a fleet failure.
+
 ## Cluster manager hooks
 
-Optional `cmsh` / `pdsh` helpers (Bright-style or compatible):
+Optional `cmsh` / `pdsh` helpers (Bright-style or compatible). They drain/undrain only; they do not run update-clean themselves.
 
 ```bash
 ./bcm/bcm-hooks.sh list-category gpu
@@ -180,11 +192,11 @@ ansible-playbook -i ansible/inventory.ini ansible/update-clean.yml -e dry_run=tr
 ansible-playbook -i ansible/inventory.ini ansible/update-clean.yml -e 'extra_args=--check'
 ```
 
-Busy nodes are skipped when `skip_if_gpu_busy=true` (default).
+Busy nodes are skipped when `skip_if_gpu_busy=true` (default). update-clean **exit 2** (reboot deferred) is treated as success, not a failed task.
 
 ## Supported systems
 
-Ubuntu LTS (and interim) GPU servers, other apt-based Debian derivatives used as AI/ML hosts, and multi-GPU rack blades.
+Ubuntu LTS (and interim) GPU servers, other apt-based Debian derivatives used as AI/ML hosts, and multi-GPU rack blades. Minimal images need `apt-get` (the `apt` wrapper is optional).
 
 Not a replacement for vendor OS major upgrades or fabric/firmware procedures. This is host package hygiene and visibility between site maintenance windows.
 

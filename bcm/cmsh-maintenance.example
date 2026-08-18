@@ -38,6 +38,8 @@
 ############################################################
 #   ./fleet/update-clean-fleet.sh --from-bcm-category gpu --deploy --parallel 4 \
 #     --drain-mode skip --
+#   # inspect only: add -- --check
+#   # node rc 2 = reboot deferred (GPUs still busy), not a failed update
 #
 # Or pdsh once the script is installed:
 #   pdsh -g gpu 'sudo /usr/local/sbin/update-clean.sh'
