@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented here.
 
+## [1.4.5] - 2026-08-17
+
+### Fixed / hardened
+- Instance cleanup closes the lock fd and leaves `LOCKFILE` in place (no unlink TOCTOU)
+- Clearer lock-open errors (missing vs unwritable directory)
+- `last-run.json` is written with a builtin encoder when `jq` is missing
+
+### Changed
+- Log `Acquired instance lock` after flock
+- `--check` help notes apt-get/dpkg and that it does not take the instance lock
+
 ## [1.4.4] - 2026-08-17
 
 ### Fixed / hardened

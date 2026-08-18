@@ -67,7 +67,7 @@ Exit `2` is not a failed update. Monitoring should treat it as “drain GPUs and
 | Package / tool | Why |
 |----------------|-----|
 | `psmisc` (`fuser`) or `lsof` | APT lock-holder detection. Without either, leftover lock files are **not** treated as held (best-effort; `apt-get` still fails if a real lock exists). |
-| `jq` | Writes machine-readable `/var/lib/update-clean/last-run.json`. Text last-run is always written. |
+| `jq` | Preferred encoder for `/var/lib/update-clean/last-run.json`. A builtin encoder is used if `jq` is missing. |
 | `coreutils` (`timeout`) | Caps vendor GPU CLI hangs. Without it, `nvidia-smi` / `rocm-smi` can block the run. |
 
 **Optional (used only when already installed):** `nvidia-smi` / `rocm-smi` (GPU health and busy-job checks), `fwupdmgr`, `docker`, `flatpak`, `snap`, `needrestart`, `curl` or `wget`, `logger`.
@@ -106,7 +106,7 @@ Further keys (`VERBOSITY`, `JOURNAL_VACUUM_TIME`, kernel exclude regexes, …) a
 
 - Logs: `/var/log/update-clean/` (directory mode `700`, files `600`). A second instance is refused before a log is created. `--dry-run` still writes a log.
 - Last run: `/var/lib/update-clean/last-run`
-- JSON (when `jq` is installed): `/var/lib/update-clean/last-run.json` — `schema_version` **2**, plus `gpu_driver`, `gpu_runtime`, counts; `status` may be `success` / `failure` / `reboot_deferred`
+- JSON: `/var/lib/update-clean/last-run.json` — `schema_version` **2**, plus `gpu_driver`, `gpu_runtime`, counts; `status` may be `success` / `failure` / `reboot_deferred`. Written with `jq` when present, otherwise a builtin encoder.
 - `sudo ./update-clean.sh --last` prints the record and the last 80 log lines
 - Tests: `UPDATE_CLEAN_SKIP_LOGS=true` (or `CI=true`) writes under `$TMPDIR` instead of `/var/log`
 

@@ -209,8 +209,9 @@ cleanup() {
     local rc=${1:-$?}
     sync 2>/dev/null || true
     flock -u 200 2>/dev/null || true
+    # Close the fd only — do not unlink LOCKFILE. Unlinking creates a TOCTOU
+    # window where a new instance can create a different inode at the same path.
     exec 200>&- 2>/dev/null || true
-    rm -f "$LOCKFILE" 2>/dev/null || true
     if [ "$rc" -ne 0 ]; then
         # err_trap already printed the failing command when ERR_DIAGNOSED is set
         error "Script exited with status $rc"
@@ -223,13 +224,25 @@ cleanup() {
 # Traps are armed only after flock succeeds so a failed acquire does not
 # delete another instance's lockfile.
 acquire_instance_lock() {
-    exec 200>"$LOCKFILE" || { error "Cannot open lockfile $LOCKFILE"; exit 1; }
+    local lockdir
+    if ! exec 200>"$LOCKFILE"; then
+        lockdir=$(dirname -- "$LOCKFILE")
+        if [ ! -d "$lockdir" ]; then
+            error "Cannot open lockfile $LOCKFILE — directory $lockdir does not exist"
+        elif [ ! -w "$lockdir" ]; then
+            error "Cannot open lockfile $LOCKFILE — $lockdir is not writable"
+        else
+            error "Cannot open lockfile $LOCKFILE"
+        fi
+        exit 1
+    fi
     if ! flock -n 200; then
         error "Another instance of $SCRIPT_NAME is already running ($LOCKFILE)."
         exit 1
     fi
     trap 'err_trap' ERR
     trap 'cleanup $?' INT TERM EXIT
+    info "Acquired instance lock ($LOCKFILE)"
 }
 
 # Create a private temp file via mktemp only (no predictable paths / symlink races).
@@ -505,8 +518,8 @@ dump_debug_state() {
     printf 'DEBUG STATE:\n'
     printf '  KERNEL_KEEP=%s SKIP_KERNEL=%s DRY_RUN=%s DEBUG=%s\n' \
         "${KERNEL_KEEP:-}" "${SKIP_KERNEL:-}" "${DRY_RUN:-}" "${DEBUG:-}"
-    printf '  LOG_DIR=%s\n  LOG_FILE=%s\n  APT_LOG=%s\n' \
-        "${LOG_DIR:-<unset>}" "${LOG_FILE:-<unset>}" "${APT_LOG:-<unset>}"
+    printf '  LOG_DIR=%s\n  LOG_FILE=%s\n  APT_LOG=%s\n  LOCKFILE=%s\n' \
+        "${LOG_DIR:-<unset>}" "${LOG_FILE:-<unset>}" "${APT_LOG:-<unset>}" "${LOCKFILE:-<unset>}"
     printf '  DISTRO=%s ARCHIVE_HOST=%s SKIP_CONNECTIVITY=%s\n' \
         "${DISTRO_NAME:-<unset>}" "${ARCHIVE_HOST:-<unset>}" "${SKIP_CONNECTIVITY:-}"
     printf '  AI_PLATFORM=%s SKIP_FIRMWARE=%s HOLD_GPU=%s DOCKER_PRUNE=%s\n' \
@@ -998,9 +1011,46 @@ guard_reboot_if_gpus_busy() {
 }
 
 
+# Escape a string for JSON (quotes, backslashes, and common controls).
+_json_escape() {
+    local s=$1
+    s=${s//\\/\\\\}
+    s=${s//\"/\\\"}
+    s=${s//$'\n'/\\n}
+    s=${s//$'\r'/\\r}
+    s=${s//$'\t'/\\t}
+    printf '%s' "$s"
+}
+
+# Builtin last-run.json when jq is not installed. Numbers are pre-validated.
+_write_last_run_json_builtin() {
+    local out="$1" schema="$2" version="$3" distro="$4" platform="$5"
+    local driver="$6" cuda="$7" gpus="$8" busy_procs="$9" ts="${10}"
+    local status="${11}" failures="${12}" freed="${13}" reboot="${14}" logf="${15}"
+
+    cat >"$out" <<JSON
+{
+  "schema_version": $schema,
+  "version": "$(_json_escape "$version")",
+  "distro": "$(_json_escape "$distro")",
+  "ai_platform": "$(_json_escape "$platform")",
+  "gpu_driver": "$(_json_escape "$driver")",
+  "gpu_runtime": "$(_json_escape "$cuda")",
+  "gpu_count": $gpus,
+  "gpu_process_count": $busy_procs,
+  "timestamp": "$(_json_escape "$ts")",
+  "status": "$(_json_escape "$status")",
+  "failures": $failures,
+  "disk_freed_mb": "$(_json_escape "$freed")",
+  "reboot_required": "$(_json_escape "$reboot")",
+  "log_file": "$(_json_escape "$logf")"
+}
+JSON
+}
+
 # Write stable last-run.json (schema_version in LAST_RUN_JSON_SCHEMA).
 # Numeric fields use --argjson; failures surface on APT_LOG / stderr (not discarded).
-# Missing jq is a skip (return 0), not a caller-checked precondition.
+# Falls back to a builtin encoder when jq is missing.
 write_last_run_json() {
     local out="$1"
     local version="$2" distro="$3" platform="$4" driver="$5" cuda="$6"
@@ -1009,16 +1059,23 @@ write_last_run_json() {
     local jq_err schema
     local apt_log="${APT_LOG:-/dev/null}"
 
-    if ! has_cmd jq; then
-        warn "jq not installed — skipping last-run.json (text last-run record is still written)"
-        return 0
-    fi
-
     schema="${LAST_RUN_JSON_SCHEMA:-1}"
     # Guard non-numeric JSON fields that --argjson requires
     [[ "$gpus" =~ ^[0-9]+$ ]] || gpus=0
     [[ "$busy_procs" =~ ^[0-9]+$ ]] || busy_procs=0
     [[ "$failures" =~ ^[0-9]+$ ]] || failures=0
+
+    if ! has_cmd jq; then
+        if _write_last_run_json_builtin "$out" "$schema" "$version" "$distro" \
+            "$platform" "$driver" "$cuda" "$gpus" "$busy_procs" "$ts" \
+            "$status" "$failures" "$freed" "$reboot" "$logf"
+        then
+            chmod 600 "$out" 2>/dev/null || true
+            return 0
+        fi
+        warn "Failed to write last-run.json without jq"
+        return 1
+    fi
 
     jq_err=$(safe_mktemp "update-clean-jq" 2>/dev/null) || jq_err=""
     [ -n "$jq_err" ] || jq_err="/dev/null"
@@ -1593,7 +1650,7 @@ usage() {
 Usage: sudo $0 [options]
 
   --dry-run              Plan only; make no changes
-  --check                Pre-flight + GPU health, then exit (needs apt-get)
+  --check                Pre-flight + GPU health (needs apt-get/dpkg; no lock)
   --last                 Show the last run
   -q, --quiet            Less console output
   --verbose              Full apt output on the console
