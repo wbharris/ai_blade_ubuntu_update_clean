@@ -9,6 +9,7 @@ All notable changes to this project are documented here.
 
 ### Changed
 - `tests/simulate_nvidia_blade.sh` is a real harness (runs `update-clean.sh` against mocked 8× H100 tools)
+- First GitHub Release (`v1.4.8`) with a versioned tarball + SHA-256
 
 ## [1.4.7] - 2026-08-17
 

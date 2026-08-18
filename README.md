@@ -48,6 +48,32 @@ Everything else (kernels to keep, docker prune, GPU holds, log retention, …) i
 
 Requires **Bash 4+** (`#!/usr/bin/env bash`). Do not run under `/bin/sh`.
 
+## Install
+
+**From the latest [GitHub Release](https://github.com/wbharris/ai_blade_ubuntu_update_clean/releases/latest):**
+
+```bash
+ver=1.4.8   # or a newer tag from the releases page
+curl -fsSL -o "ai_blade_ubuntu_update_clean-${ver}.tar.gz" \
+  "https://github.com/wbharris/ai_blade_ubuntu_update_clean/releases/download/v${ver}/ai_blade_ubuntu_update_clean-${ver}.tar.gz"
+tar -xzf "ai_blade_ubuntu_update_clean-${ver}.tar.gz"
+cd "ai_blade_ubuntu_update_clean-${ver}"
+sudo install -m 755 update-clean.sh /usr/local/sbin/update-clean.sh
+sudo cp systemd/update-clean.service systemd/update-clean.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now update-clean.timer
+```
+
+**From git (development):**
+
+```bash
+git clone https://github.com/wbharris/ai_blade_ubuntu_update_clean.git
+cd ai_blade_ubuntu_update_clean
+sudo install -m 755 update-clean.sh /usr/local/sbin/update-clean.sh
+```
+
+This is a host script, not an apt/npm/PyPI package. The published artifact is the versioned tarball on the release.
+
 Run weekly during a maintenance window after draining workloads. Do not use `--reboot-if-required` on multi-tenant blades unless orchestration has already drained GPUs.
 
 ### Exit codes
@@ -219,8 +245,9 @@ systemd/                 # optional weekly timer
 fleet/                   # SSH runner
 bcm/                     # optional cmsh/pdsh hooks
 ansible/                 # optional playbook
-.github/workflows/       # ShellCheck + smoke
+.github/workflows/       # ShellCheck + release
 tests/                   # NVIDIA blade simulation harness
+scripts/package-release.sh
 ```
 
 `./tests/simulate_nvidia_blade.sh` mocks an 8× H100 node and runs the real script (quiet/busy/skip/lock).

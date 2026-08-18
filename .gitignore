@@ -25,3 +25,6 @@ cleanup-push.sh
 # Fleet run artifacts
 fleet-runs/
 ansible/inventory.ini
+
+# Release build output
+dist/
