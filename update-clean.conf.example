@@ -26,6 +26,10 @@
 # Still blocked if GPU compute processes are running (process exit 2, not 1)
 # REBOOT_IF_REQUIRED=false
 
+# Abort before apt when GPU compute jobs are running (default: true, exit 3).
+# Set false or pass --no-skip-if-gpu-busy to upgrade a busy node anyway.
+# SKIP_IF_GPU_BUSY=true
+
 # Skip fwupd firmware updates (default: true on AI/GPU blades)
 # Prefer site or vendor firmware workflows on managed fleets
 # SKIP_FIRMWARE=true

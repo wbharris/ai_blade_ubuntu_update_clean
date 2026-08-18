@@ -30,7 +30,7 @@
 #     fwupdmgr, curl/wget, fuser/lsof (APT lock holders), logger
 # Config: /etc/update-clean.conf, root or SUDO_USER home configs (see README)
 # Logs: /var/log/update-clean/ (dir 0700, files 0600; UPDATE_CLEAN_SKIP_LOGS or CI=true → $TMPDIR)
-# Exit codes: 0 = success; 1 = step failure(s); 2 = reboot deferred (GPUs busy)
+# Exit codes: 0 = success; 1 = step failure(s); 2 = reboot deferred; 3 = skipped (GPUs busy)
 # last-run.json schema_version: 2 (stable fields; see write_last_run_json)
 #
 # Usage: sudo ./update-clean.sh [--dry-run] [--check] [--help] [--version]
@@ -64,6 +64,9 @@ SKIP_KERNEL=false
 DEBUG=false
 SKIP_CONNECTIVITY=false
 SKIP_GPU_CHECK=false
+# Abort before apt when GPU compute jobs are running (safe default on AI blades).
+# Fleet --drain-mode force passes --no-skip-if-gpu-busy.
+SKIP_IF_GPU_BUSY=${SKIP_IF_GPU_BUSY:-true}
 SKIP_FIRMWARE=${SKIP_FIRMWARE:-true}   # safer default on AI blades (use vendor tooling)
 # Hold installed GPU/accelerator vendor packages during cleanup (when present)
 HOLD_GPU=${HOLD_GPU:-${HOLD_NVIDIA:-true}}  # HOLD_NVIDIA is a deprecated alias
@@ -128,6 +131,7 @@ CLI_SKIP_CONNECTIVITY=false
 CLI_REBOOT_IF_REQUIRED=false
 CLI_DEBUG=false
 CLI_SKIP_GPU_CHECK=false
+CLI_SKIP_IF_GPU_BUSY=""
 CLI_SKIP_FIRMWARE=""
 CLI_HOLD_GPU=""
 CLI_DOCKER_PRUNE=""
@@ -212,7 +216,8 @@ cleanup() {
     # Close the fd only — do not unlink LOCKFILE. Unlinking creates a TOCTOU
     # window where a new instance can create a different inode at the same path.
     exec 200>&- 2>/dev/null || true
-    if [ "$rc" -ne 0 ]; then
+    # 2 = reboot deferred, 3 = skipped (GPUs busy) — not unexpected failures
+    if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ] && [ "$rc" -ne 3 ]; then
         # err_trap already printed the failing command when ERR_DIAGNOSED is set
         error "Script exited with status $rc"
     fi
@@ -374,6 +379,13 @@ validate_config_values() {
             HOLD_GPU=true
             ;;
     esac
+    case "${SKIP_IF_GPU_BUSY,,}" in
+        true|false|yes|no|1|0) ;;
+        *)
+            warn "Invalid SKIP_IF_GPU_BUSY='$SKIP_IF_GPU_BUSY', using true"
+            SKIP_IF_GPU_BUSY=true
+            ;;
+    esac
     case "${VERBOSITY,,}" in
         quiet|normal|verbose) ;;
         *)
@@ -428,6 +440,7 @@ apply_cli_config_overrides() {
     if truthy "${CLI_SKIP_GPU_CHECK:-false}"; then SKIP_GPU_CHECK=true; fi
     if truthy "${CLI_GPU_ONLY:-false}"; then GPU_ONLY=true; fi
 
+    [ -n "${CLI_SKIP_IF_GPU_BUSY:-}" ] && SKIP_IF_GPU_BUSY="$CLI_SKIP_IF_GPU_BUSY"
     [ -n "${CLI_SKIP_FIRMWARE:-}" ] && SKIP_FIRMWARE="$CLI_SKIP_FIRMWARE"
     [ -n "${CLI_HOLD_GPU:-}" ] && HOLD_GPU="$CLI_HOLD_GPU"
     [ -n "${CLI_DOCKER_PRUNE:-}" ] && DOCKER_PRUNE="$CLI_DOCKER_PRUNE"
@@ -816,6 +829,15 @@ report_gpu_health() {
         return 0
     fi
 
+    count_gpu_compute_processes
+
+    # Quiet + idle: one line. Always expand when jobs are running.
+    if [ "${VERBOSITY:-normal}" = "quiet" ] && ! truthy "${GPU_BUSY:-false}"; then
+        info "GPU: driver=${GPU_DRIVER:-unknown} runtime=${GPU_RUNTIME:-n/a} gpus=${GPU_COUNT} busy=0"
+        info "=== End GPU health ==="
+        return 0
+    fi
+
     info "GPU driver: ${GPU_DRIVER:-unknown}"
     [ -n "$GPU_RUNTIME" ] && info "GPU runtime (vendor-reported): $GPU_RUNTIME"
     info "GPU count: $GPU_COUNT"
@@ -839,7 +861,6 @@ report_gpu_health() {
         done || true
     fi
 
-    count_gpu_compute_processes
     if truthy "${GPU_BUSY:-false}"; then
         warn "GPU compute processes active: $GPU_PROCESS_COUNT (workloads in progress)"
         if has_cmd nvidia-smi; then
@@ -927,7 +948,12 @@ hold_gpu_packages() {
 
     mapfile -t pkgs < <(list_gpu_hold_packages)
     if [ "${#pkgs[@]}" -eq 0 ]; then
-        info "No GPU/accelerator packages found to hold"
+        if has_cmd nvidia-smi || has_cmd rocm-smi; then
+            warn "HOLD_GPU is on but no matching vendor packages are installed"
+            warn "Driver may be a .run / non-apt install; autoremove cannot protect that stack"
+        else
+            info "No GPU/accelerator packages found to hold"
+        fi
         return 0
     fi
 
@@ -1008,6 +1034,62 @@ guard_reboot_if_gpus_busy() {
         return 1
     fi
     return 0
+}
+
+# Exit 3 before apt when GPU jobs are running (SKIP_IF_GPU_BUSY, default true).
+abort_if_gpus_busy() {
+    truthy "${SKIP_IF_GPU_BUSY:-true}" || return 0
+    truthy "${SKIP_GPU_CHECK:-false}" && return 0
+    count_gpu_compute_processes
+    truthy "${GPU_BUSY:-false}" || return 0
+
+    warn "SKIP_IF_GPU_BUSY: $GPU_PROCESS_COUNT GPU compute process(es) — not starting apt"
+    warn "Drain jobs, or re-run with --no-skip-if-gpu-busy (SKIP_IF_GPU_BUSY=false)"
+
+    FREED_MB="n/a"
+    RUN_STATUS=skipped_busy
+    if ! truthy "${DRY_RUN:-false}"; then
+        mkdir -p "$LAST_RUN_DIR"
+        LAST_RUN_FILE="$LAST_RUN_DIR/last-run"
+        RUN_TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+        cat > "$LAST_RUN_FILE" << LAST
+VERSION=$SCRIPT_VERSION
+DISTRO=$DISTRO_NAME
+AI_PLATFORM=$AI_PLATFORM
+GPU_DRIVER=${GPU_DRIVER:-}
+GPU_RUNTIME=${GPU_RUNTIME:-}
+GPU_COUNT=$GPU_COUNT
+GPU_BUSY=$GPU_BUSY
+GPU_PROCESS_COUNT=$GPU_PROCESS_COUNT
+TIMESTAMP=$RUN_TIMESTAMP
+STATUS=$RUN_STATUS
+FAILURES=0
+DISK_FREED_MB=$FREED_MB
+REBOOT_REQUIRED=no
+REBOOT_DEFERRED=no
+LOG_FILE=${LOG_FILE:-}
+LAST
+        write_last_run_json \
+            "$LAST_RUN_DIR/last-run.json" \
+            "$SCRIPT_VERSION" \
+            "$DISTRO_NAME" \
+            "$AI_PLATFORM" \
+            "${GPU_DRIVER:-}" \
+            "${GPU_RUNTIME:-}" \
+            "${GPU_COUNT:-0}" \
+            "${GPU_PROCESS_COUNT:-0}" \
+            "$RUN_TIMESTAMP" \
+            "$RUN_STATUS" \
+            0 \
+            "$FREED_MB" \
+            "no" \
+            "${LOG_FILE:-}" \
+            || true
+        info "Last run record written to $LAST_RUN_FILE"
+    else
+        info "DRY-RUN: would skip the update (GPUs busy)"
+    fi
+    exit 3
 }
 
 
@@ -1664,7 +1746,7 @@ Usage: sudo $0 [options]
 Kernel keep count, docker prune, GPU package holds, log retention,
 and similar knobs belong in a config file — see update-clean.conf.example.
 
-Exit: 0 ok · 1 step failure(s) · 2 reboot deferred (GPUs busy)
+Exit: 0 ok · 1 step failure(s) · 2 reboot deferred · 3 skipped (GPUs busy)
 
 Target: Ubuntu GPU / AI compute hosts (vendor-agnostic)
 USAGE
@@ -1772,8 +1854,8 @@ run_preflight_checks() {
     detect_ai_platform
     printf 'Docker: '
     if has_cmd docker; then printf '%s\n' "present"; else printf '%s\n' "not installed"; fi
-    printf 'SKIP_FIRMWARE: %s  HOLD_GPU: %s  DOCKER_PRUNE: %s\n' \
-        "$SKIP_FIRMWARE" "$HOLD_GPU" "$DOCKER_PRUNE"
+    printf 'SKIP_FIRMWARE: %s  HOLD_GPU: %s  SKIP_IF_GPU_BUSY: %s  DOCKER_PRUNE: %s\n' \
+        "$SKIP_FIRMWARE" "$HOLD_GPU" "$SKIP_IF_GPU_BUSY" "$DOCKER_PRUNE"
 
     if ! truthy "${SKIP_GPU_CHECK:-false}"; then
         report_gpu_health || true
@@ -1860,6 +1942,11 @@ while [[ $# -gt 0 ]]; do
         --no-gpu-check)
             SKIP_GPU_CHECK=true
             CLI_SKIP_GPU_CHECK=true
+            shift
+            ;;
+        --no-skip-if-gpu-busy)
+            SKIP_IF_GPU_BUSY=false
+            CLI_SKIP_IF_GPU_BUSY=false
             shift
             ;;
         --gpu-only)
@@ -2044,8 +2131,9 @@ info "AI platform: $AI_PLATFORM${AI_PLATFORM_DETAIL:+ ($AI_PLATFORM_DETAIL)}"
 if ! truthy "${SKIP_GPU_CHECK:-false}"; then
     report_gpu_health || true
     if truthy "${GPU_BUSY:-false}"; then
-        warn "GPUs are busy — updates will proceed, but reboot will be blocked if requested"
-        warn "Prefer draining jobs before multi-tenant blade maintenance"
+        warn "GPUs are busy — reboot will be blocked if requested"
+        abort_if_gpus_busy
+        warn "SKIP_IF_GPU_BUSY is off — updates will proceed; prefer draining jobs first"
     fi
 else
     info "Skipping GPU health checks (--no-gpu-check)"
@@ -2104,11 +2192,11 @@ fi
 info "Upgrading packages..."
 apt_run upgrade || warn "apt upgrade had issues"
 
-info "Remaining upgrades after initial upgrade (apt-get -s upgrade, read-only):"
-apt-get -s upgrade 2>/dev/null | sed -n '1,40p' || true
-
 if truthy "${DRY_RUN:-false}"; then
     show_dry_run_preview
+else
+    info "Remaining upgrades after initial upgrade (apt-get -s upgrade, read-only):"
+    apt-get -s upgrade 2>/dev/null | sed -n '1,40p' || true
 fi
 
 info "Performing full system upgrade..."
@@ -2222,7 +2310,11 @@ fi
 # Final status & summary
 # ────────────────────────────────────────────────────────────────
 AFTER=$(get_used_kb_for_paths / /var /boot)
-FREED_MB=$(calc_disk_freed_mb "$BEFORE" "$AFTER")
+if truthy "${DRY_RUN:-false}"; then
+    FREED_MB="n/a"
+else
+    FREED_MB=$(calc_disk_freed_mb "$BEFORE" "$AFTER")
+fi
 
 REBOOT_DURING_RUN=false
 if [ -f /var/run/reboot-required ]; then
@@ -2313,7 +2405,11 @@ elif truthy "${DRY_RUN:-false}"; then
     info "DRY-RUN: Would check for services needing restart"
 fi
 
-MSG="System update completed. Freed ${FREED_MB} MB."
+if truthy "${DRY_RUN:-false}"; then
+    MSG="System update dry-run completed."
+else
+    MSG="System update completed. Freed ${FREED_MB} MB."
+fi
 if [ "$REBOOT_DURING_RUN" = true ]; then
     MSG="$MSG Reboot recommended."
 fi
@@ -2330,7 +2426,11 @@ log "=== Update Summary ==="
 log "Distro: $DISTRO_NAME"
 log "AI platform: $AI_PLATFORM${AI_PLATFORM_DETAIL:+ ($AI_PLATFORM_DETAIL)}"
 log "GPU driver: ${GPU_DRIVER:-n/a}  runtime: ${GPU_RUNTIME:-n/a}  GPUs: $GPU_COUNT  busy_procs: $GPU_PROCESS_COUNT"
-log "Disk space freed (/, /var, /boot): ${FREED_MB} MB"
+if truthy "${DRY_RUN:-false}"; then
+    log "Disk space freed (/, /var, /boot): n/a (dry-run)"
+else
+    log "Disk space freed (/, /var, /boot): ${FREED_MB} MB"
+fi
 log "Failures recorded: $EXIT_CODE"
 if truthy "${REBOOT_DEFERRED:-false}"; then
     log "Reboot deferred: yes (GPUs busy)"

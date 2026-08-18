@@ -70,7 +70,8 @@ Pass-through tip: add --quiet or --verbose after -- for console noise control on
 Inspect with -- --check (no instance lock on the node). Do not pass --reboot-if-required
 unless the category is already drained.
 
-Node rc 2 (reboot deferred / GPUs busy) is status reboot_deferred, not fail.
+Node rc 2 = reboot_deferred; node rc 3 = skipped_busy (SKIP_IF_GPU_BUSY).
+--drain-mode force adds --no-skip-if-gpu-busy on the node.
 Fleet exits: 0 ok · 1 any fail · 2 every node skipped_busy
 
 Everything after -- is passed to update-clean.sh on each node:
@@ -334,6 +335,10 @@ run_one_host() {
             if [[ ${#PASS_ARGS[@]} -gt 0 ]]; then
                 pass_q=$(printf '%q ' "${PASS_ARGS[@]}")
             fi
+            # force = run even if busy; override the node script's SKIP_IF_GPU_BUSY default
+            if [[ "$DRAIN_MODE" == "force" ]]; then
+                pass_q+="--no-skip-if-gpu-busy "
+            fi
             set +e
             ssh_cmd "$target" "$port" \
                 "if [ -x '${REMOTE_PATH}' ] || [ -f '${REMOTE_PATH}' ]; then sudo bash '${REMOTE_PATH}' ${pass_q}; else echo 'update-clean missing at ${REMOTE_PATH}; use --deploy' >&2; exit 127; fi"
@@ -344,6 +349,9 @@ run_one_host() {
             elif [[ "$rc" -eq 2 ]]; then
                 # update-clean: reboot deferred (GPUs busy) — not a failed update
                 status="reboot_deferred"
+            elif [[ "$rc" -eq 3 ]]; then
+                # update-clean: SKIP_IF_GPU_BUSY aborted before apt
+                status="skipped_busy"
             else
                 status="fail"
             fi

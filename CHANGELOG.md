@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here.
 
+## [1.4.7] - 2026-08-17
+
+### Changed
+- `--quiet` GPU health is one line when idle; full report if jobs are running
+- `SKIP_IF_GPU_BUSY=true` (default): abort before apt when GPU jobs are running (**exit 3**). Override with `--no-skip-if-gpu-busy`. Fleet `--drain-mode force` passes the override
+- Warn when a vendor GPU CLI is present but no apt packages match the hold list
+- Dry-run reports disk freed as `n/a` (no fake negative reclaim)
+- Dry-run prints one upgrade preview, not two
+
 ## [1.4.6] - 2026-08-17
 
 ### Changed

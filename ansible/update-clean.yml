@@ -67,9 +67,9 @@
         argv: "{{ ([update_clean_dest] + (extra_args.split() if extra_args else []) + (['--dry-run'] if dry_run else [])) }}"
       register: uc_result
       when: not (skip_if_gpu_busy | bool) or (gpu_busy.stdout | default('0') | trim | int) == 0
-      # 0 = ok; 2 = update ok, reboot deferred (GPUs busy)
-      changed_when: not dry_run and (uc_result.rc | default(0) | int) in [0, 2]
-      failed_when: (uc_result.rc | default(1) | int) not in [0, 2]
+      # 0 = ok; 2 = reboot deferred; 3 = skipped (GPUs busy)
+      changed_when: not dry_run and (uc_result.rc | default(0) | int) == 0
+      failed_when: (uc_result.rc | default(1) | int) not in [0, 2, 3]
 
     - name: Show update-clean summary tail
       ansible.builtin.debug:

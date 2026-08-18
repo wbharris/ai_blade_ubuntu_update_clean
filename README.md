@@ -57,8 +57,11 @@ Run weekly during a maintenance window after draining workloads. Do not use `--r
 | `0` | Success |
 | `1` | One or more steps failed (count is `FAILURES` in the last-run record) |
 | `2` | Update finished; reboot was requested but **deferred** because GPU jobs are still running |
+| `3` | Update **skipped** — GPU compute jobs were running (`SKIP_IF_GPU_BUSY`, default true) |
 
-Exit `2` is not a failed update. Monitoring, fleet, and Ansible treat it as “drain GPUs and reboot.”
+Exit `2` and `3` are not failed updates. Fleet and Ansible treat them as skip / reboot-later, not `fail`.
+
+`--quiet` prints a one-line GPU summary unless jobs are running. `--check` (normal verbosity) still prints the full health report.
 
 ### Dependencies
 
@@ -86,6 +89,7 @@ Sourced in order if present:
 KERNEL_KEEP=2
 SKIP_FIRMWARE=true
 HOLD_GPU=true
+SKIP_IF_GPU_BUSY=true          # abort before apt if jobs are running (exit 3)
 DOCKER_PRUNE=dangling          # none | dangling | unused
 REBOOT_IF_REQUIRED=false
 ```
@@ -101,6 +105,7 @@ Config loads after CLI parsing; explicit flags win.
 | `DOCKER_PRUNE` | `dangling` | `none` / `dangling` / `unused` |
 | `KERNEL_KEEP` | `2` | **Additional** old kernels besides the running one (default: running + 2 older) |
 | `REBOOT_IF_REQUIRED` | `false` | Auto-reboot; blocked if GPU jobs are active (exit **2**) |
+| `SKIP_IF_GPU_BUSY` | `true` | Do not start apt while GPU jobs are running (exit **3**). Hidden override: `--no-skip-if-gpu-busy` |
 
 Further keys (`VERBOSITY`, `JOURNAL_VACUUM_TIME`, `APT_LOCK_WAIT_SECS`, kernel exclude regexes, …) are documented in `update-clean.conf.example`.
 
@@ -164,7 +169,7 @@ Drain modes: `skip` (default), `wait`, `force`. Per-run logs and `summary.tsv` l
 | Node / row status | Meaning |
 |-------------------|---------|
 | `ok` / `dry_run` | Succeeded |
-| `skipped_busy` | Drain policy skipped the node (GPUs in use) |
+| `skipped_busy` | Drain policy skipped the node, or the node script exited **3** (`SKIP_IF_GPU_BUSY`) |
 | `reboot_deferred` | Node update finished; reboot blocked (update-clean **exit 2**) |
 | `fail` / `deploy_fail` / `drain_error` | Real failure |
 
