@@ -42,7 +42,7 @@ if command -v wkhtmltopdf >/dev/null 2>&1; then
     
     # Need markdown to HTML first
     if command -v markdown >/dev/null 2>&1; then
-        HTML_TMP=$(mktemp --suffix=.html)
+        HTML_TMP=$(mktemp "${TMPDIR:-/tmp}/uc-XXXXXX")
         trap 'rm -f "$HTML_TMP"' EXIT
         
         markdown "$MD_FILE" > "$HTML_TMP"
@@ -55,7 +55,7 @@ fi
 # Fallback: try enscript + gs (Linux)
 if command -v enscript >/dev/null 2>&1 && command -v gs >/dev/null 2>&1; then
     echo "[*] Using enscript + ghostscript..."
-    PS_TMP=$(mktemp --suffix=.ps)
+    PS_TMP=$(mktemp "${TMPDIR:-/tmp}/uc-XXXXXX")
     trap 'rm -f "$PS_TMP"' EXIT
     
     enscript -B -p "$PS_TMP" "$MD_FILE" 2>/dev/null || true

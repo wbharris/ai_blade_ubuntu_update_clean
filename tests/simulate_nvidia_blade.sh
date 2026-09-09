@@ -137,8 +137,36 @@ expect_no_grep() {
     fi
 }
 
+kernel_related_re() {
+    local ver="$1" ver_ere
+    ver_ere=$(printf '%s' "$ver" | sed 's/[][().^$+*?{|\\]/\\&/g')
+    printf '%s' "^linux-(headers|modules)(-extra|-unsigned)?-${ver_ere}($|-)"
+}
+
+expect_kernel_match() {
+    local name="$1" pkg="$2" ver="$3" want="$4"
+    local re got=0
+    re=$(kernel_related_re "$ver")
+    if printf '%s\n' "$pkg" | grep -Eq -- "$re"; then
+        got=1
+    fi
+    if [ "$got" -eq "$want" ]; then
+        printf '  PASS  %s\n' "$name"
+        PASS=$((PASS + 1))
+    else
+        printf '  FAIL  %s (pkg=%s ver=%s want=%s)\n' "$name" "$pkg" "$ver" "$want"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
 printf '=== NVIDIA AI blade simulation (real update-clean.sh) ===\n'
 printf 'script: %s\nmocks:  %s\n\n' "$UC" "$SIM"
+
+expect_kernel_match "purge 6.5.0-14 headers" "linux-headers-6.5.0-14-generic" "6.5.0-14-generic" 1
+expect_kernel_match "purge 6.5.0-14 modules-extra" "linux-modules-extra-6.5.0-14-generic" "6.5.0-14-generic" 1
+expect_kernel_match "purge does not hit 6.5.0-140" "linux-modules-6.5.0-140-generic" "6.5.0-14-generic" 0
+expect_kernel_match "purge 6.5.0-14 without flavor vs 140" "linux-headers-6.5.0-140" "6.5.0-14" 0
+expect_kernel_match "purge 6.5.0-14 without flavor exact" "linux-modules-6.5.0-14" "6.5.0-14" 1
 
 # 1) --version sees mocked driver / 8 GPUs
 out="$SIM/01-version.txt"

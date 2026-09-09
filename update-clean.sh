@@ -99,7 +99,7 @@ LAST_RUN_DIR="${LAST_RUN_DIR:-/var/lib/update-clean}"
 CRITICAL_PACKAGES=(base-files base-passwd bash coreutils util-linux)
 readonly SCRIPT_NAME="update-clean"
 # Sidecar VERSION (git tree) wins; embedded fallback for single-file install.
-readonly SCRIPT_VERSION_EMBEDDED="1.4.13"
+readonly SCRIPT_VERSION_EMBEDDED="1.4.14"
 if [ -r "$SCRIPT_DIR/VERSION" ]; then
     SCRIPT_VERSION=$(tr -d '[:space:]' <"$SCRIPT_DIR/VERSION")
 else
@@ -1419,10 +1419,12 @@ find_running_kernel_pkg() {
 
 purge_kernel_related() {
     local pkg="$1"
-    local ver suffix candidate related
+    local ver ver_ere suffix candidate related
 
     if [[ "$pkg" =~ ^linux-image-(.+)$ ]]; then
         ver="${BASH_REMATCH[1]}"
+        # Escape ERE metacharacters so 6.5.0-14 does not match 6.5.0-140.
+        ver_ere=$(printf '%s' "$ver" | sed 's/[][().^$+*?{|\\]/\\&/g')
         for suffix in headers modules-extra modules modules-unsigned; do
             candidate="linux-${suffix}-${ver}"
             if dpkg-query -W -f='${Status}' "$candidate" 2>/dev/null | grep -q 'install ok installed'; then
@@ -1436,8 +1438,7 @@ purge_kernel_related() {
             apt_run purge "$related" || true
         done < <(
             dpkg-query -W -f='${Package}\n' 2>/dev/null \
-                | grep -E '^linux-(headers|modules)' \
-                | grep -F -- "$ver" || true
+                | grep -E "^linux-(headers|modules)(-extra|-unsigned)?-${ver_ere}($|-)" || true
         )
     fi
 }
