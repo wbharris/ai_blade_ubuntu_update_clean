@@ -5,8 +5,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MD_FILE="$SCRIPT_DIR/SIMULATION_RESULTS.md"
-PDF_FILE="$SCRIPT_DIR/SIMULATION_RESULTS.pdf"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+MD_FILE="$REPO_ROOT/SIMULATION_RESULTS.md"
+PDF_FILE="$REPO_ROOT/SIMULATION_RESULTS.pdf"
 
 if [ ! -f "$MD_FILE" ]; then
     echo "Error: $MD_FILE not found"
@@ -42,7 +43,7 @@ if command -v wkhtmltopdf >/dev/null 2>&1; then
     # Need markdown to HTML first
     if command -v markdown >/dev/null 2>&1; then
         HTML_TMP=$(mktemp --suffix=.html)
-        trap "rm -f '$HTML_TMP'" EXIT
+        trap 'rm -f "$HTML_TMP"' EXIT
         
         markdown "$MD_FILE" > "$HTML_TMP"
         wkhtmltopdf "$HTML_TMP" "$PDF_FILE"
@@ -55,7 +56,7 @@ fi
 if command -v enscript >/dev/null 2>&1 && command -v gs >/dev/null 2>&1; then
     echo "[*] Using enscript + ghostscript..."
     PS_TMP=$(mktemp --suffix=.ps)
-    trap "rm -f '$PS_TMP'" EXIT
+    trap 'rm -f "$PS_TMP"' EXIT
     
     enscript -B -p "$PS_TMP" "$MD_FILE" 2>/dev/null || true
     gs -q -dNOPAUSE -dBATCH -dSAFER -sDEVICE=pdfwrite \

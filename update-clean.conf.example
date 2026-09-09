@@ -3,9 +3,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Copy to one of:
-#   /etc/update-clean.conf
-#   ~/.config/update-clean.conf
-#   ~/.update-clean.conf
+#   /etc/update-clean.conf          (required path on production blades)
+#   /root/.config/update-clean.conf
+#   /root/.update-clean.conf
+# Or pass extra root-owned files with: sudo ./update-clean.sh --config /path
+#
+# When the script runs as root it will NOT source $SUDO_USER home configs.
 
 # Number of log files to retain (default: 3)
 # LOG_RETENTION=10

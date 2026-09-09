@@ -73,5 +73,5 @@
 
     - name: Show update-clean summary tail
       ansible.builtin.debug:
-        msg: "{{ uc_result.stdout_lines | default([]) | last(30) }}"
+        msg: "{{ (uc_result.stdout_lines | default([]))[-30:] }}"
       when: uc_result is defined and uc_result.stdout_lines is defined

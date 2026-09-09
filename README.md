@@ -4,7 +4,7 @@ One **update and cleanup** script for **Ubuntu AI / GPU compute blades** and oth
 
 Same apt safety model as [`debian_ubuntu_update_clean`](https://github.com/wbharris/debian_ubuntu_update_clean), plus GPU-host health checks, vendor-package holds, firmware caution, and container cleanup.
 
-**Version:** `VERSION` file, or `./update-clean.sh --version`. See `CHANGELOG.md` for history.
+**Version:** `1.4.13` (`VERSION` file, or `./update-clean.sh --version`). See `CHANGELOG.md` for history.
 
 Vendor-agnostic: not affiliated with any GPU or cluster vendor. Optional tools (a vendor GPU CLI, fabric units, `cmsh`) are used only when already installed.
 
@@ -109,8 +109,9 @@ Exit `2` and `3` are not failed updates. Fleet and Ansible treat them as skip / 
 Sourced in order if present:
 
 - `/etc/update-clean.conf` (must be root-owned)
-- As root: `/root/.config/update-clean.conf`, `/root/.update-clean.conf`
-- Via `sudo`: also the invoking user's `~/.config/update-clean.conf` and `~/.update-clean.conf`
+- As root: `/root/.config/update-clean.conf`, `/root/.update-clean.conf` only — **never** `$SUDO_USER` home files
+- Non-root inspect modes (`--check` / `--version` / `--last`): `$HOME/.config/update-clean.conf` and `$HOME/.update-clean.conf`
+- Extra files via `--config FILE` (repeatable). When running as root, those files must also be root-owned
 
 ```bash
 KERNEL_KEEP=2
@@ -121,9 +122,9 @@ DOCKER_PRUNE=dangling          # none | dangling | unused
 REBOOT_IF_REQUIRED=false
 ```
 
-`/etc/update-clean.conf` must be owned by root and not world-writable. User-level configs are sourced without ownership checks — only use files you trust.
+Root-mode configs must be owned by uid 0 and not world-writable. A `sudo` caller cannot inject root execution through `~/.config/update-clean.conf`.
 
-Config loads after CLI parsing; explicit flags win.
+Config loads after CLI parsing; explicit flags win. Use `--config /etc/update-clean.conf` (or another root-owned path) for extra files.
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
@@ -141,7 +142,7 @@ Further keys (`VERBOSITY`, `JOURNAL_VACUUM_TIME`, `APT_LOCK_WAIT_SECS`, kernel e
 - Logs: `/var/log/update-clean/` (directory mode `700`, files `600`)
 - Instance lock: `/run/update-clean.lock` (fd is closed on exit; the file is left in place)
 - Last run: `/var/lib/update-clean/last-run` (`STATUS` may be `success` / `failure` / `reboot_deferred` / `skipped_busy`)
-- `disk_freed_mb` is the `df` change on `/`, `/var`, and `/boot` only (Docker/journal/snap on other volumes are not included)
+- `disk_freed_mb` is the `df -P` used-space change on unique filesystems covering `/`, `/var`, and `/boot` (same device is not counted twice; Docker/journal/snap on other volumes are not included)
 - JSON: `/var/lib/update-clean/last-run.json` — `schema_version` **2**, plus `gpu_driver`, `gpu_runtime`, counts. Written with `jq` when present, otherwise a builtin encoder
 - `sudo ./update-clean.sh --last` prints the record and the last 80 log lines
 - Tests: `UPDATE_CLEAN_SKIP_LOGS=true` (or `CI=true`) writes under `$TMPDIR` instead of `/var/log`
@@ -152,7 +153,7 @@ Further keys (`VERBOSITY`, `JOURNAL_VACUUM_TIME`, `APT_LOCK_WAIT_SECS`, kernel e
 - Needs at least 2 GB free on `/` and `/var`. `/boot` hard abort is 100 MB (small EFI partitions are common on blades); warns below 50 MB and skips kernel purge below 10 MB
 - Warns if `/var` has less than 10 GB (typical container-image volume)
 - Keeps the running kernel plus the `KERNEL_KEEP` newest other images. Purge is skipped unless `dpkg` owns `/boot/vmlinuz-$(uname -r)` — custom/unsigned kernels are left alone
-- Holds the GPU stack during autoremove/purge by default
+- Holds critical OS and GPU packages **during** autoremove/purge only, then `apt-mark unhold`s packages that were not already held (EXIT trap). Hosts that ran ≤1.4.12 may still have leftover holds — inspect with `apt-mark showhold`
 - Non-critical steps do not abort the run
 - Auto-reboot refuses while GPU compute processes are active
 - APT lock-holder detection needs `fuser` (psmisc) or `lsof`; without them leftover lock files are not treated as held
@@ -256,10 +257,13 @@ scripts/package-release.sh
 ## Testing
 
 ```bash
-./tests/simulate_nvidia_blade.sh
+sudo ./tests/run_simulation.sh
+# or: sudo ./tests/simulate_nvidia_blade.sh
 ```
 
-Mocks an 8× NVIDIA H100 blade (`nvidia-smi`, container CLI, fabric) and runs the real script: inspect modes, quiet GPU summary, skip-if-busy (exit 3), force override, dry-run disk `n/a`, hold-list warning, and instance lock. Latest HTML report: [`tests/last-results.html`](tests/last-results.html).
+Requires root: `update-clean.sh` enforces `EUID == 0` even for `--dry-run`. Without sudo the harness exits immediately with a clear error.
+
+Mocks an 8× NVIDIA H100 blade (`nvidia-smi`, container CLI, fabric) and runs the real script: inspect modes, quiet GPU summary, skip-if-busy (exit 3), force override, dry-run disk `n/a`, hold-list warning, instance lock, and `--config` ownership. Latest HTML report: [`tests/last-results.html`](tests/last-results.html).
 
 `SIMULATION_RESULTS.md` is a historical 1.4.5 / 4× H100 write-up, not the last harness run.
 

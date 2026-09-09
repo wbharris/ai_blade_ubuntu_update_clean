@@ -3,10 +3,15 @@
 # Covers quiet GPU summary, SKIP_IF_GPU_BUSY, hold warning, dry-run disk n/a,
 # single upgrade preview, inspect modes, and instance lock.
 #
-# Usage: ./tests/simulate_nvidia_blade.sh
+# Usage: sudo ./tests/simulate_nvidia_blade.sh
 # Exit 0 if every case passes.
 
 set -euo pipefail
+
+if [ "${EUID:-$(id -u)}" -ne 0 ]; then
+    printf 'Error: tests must be run as root (sudo ./tests/run_simulation.sh)\n' >&2
+    exit 1
+fi
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 UC="$ROOT/update-clean.sh"
@@ -94,6 +99,8 @@ run_uc() {
     env PATH="$SIM/bin:$PATH" \
         UPDATE_CLEAN_SKIP_LOGS=true \
         LOCKFILE="$SIM/update-clean.lock" \
+        MIN_DISK_KB=1 \
+        BOOT_DISK_KB=1 \
         "$@" >"$out" 2>&1
 }
 
@@ -162,7 +169,9 @@ expect_grep "check torchrun" "$out" "torchrun"
 # 4) quiet idle dry-run: one GPU line, n/a disk, one preview, hold warning
 out="$SIM/04-quiet-idle.txt"
 rc=0
+holds_before=$(apt-mark showhold 2>/dev/null | sort || true)
 run_uc "$out" SIM_GPU_BUSY=0 "$UC" --dry-run --offline --quiet || rc=$?
+holds_after=$(apt-mark showhold 2>/dev/null | sort || true)
 expect_rc "quiet idle exit" "$rc" 0
 expect_grep "quiet one-line GPU" "$out" "GPU: driver=550.127.08 runtime=12.4 gpus=8 busy=0"
 expect_no_grep "quiet no inventory dump" "$out" "GPU inventory:"
@@ -178,6 +187,14 @@ fi
 expect_no_grep "no duplicate remaining-upgrades" "$out" "Remaining upgrades after initial upgrade"
 expect_grep "hold-list warning" "$out" "HOLD_GPU is on but no matching vendor packages"
 expect_grep "would apt upgrade" "$out" "DRY-RUN: would run: apt-get -y upgrade"
+expect_grep "temporary critical holds" "$out" "DRY-RUN: would apt-mark hold bash \\(temporary\\)"
+if [ "$holds_before" = "$holds_after" ]; then
+    printf '  PASS  dry-run left apt-mark holds unchanged\n'
+    PASS=$((PASS + 1))
+else
+    printf '  FAIL  dry-run changed apt-mark holds\n'
+    FAIL=$((FAIL + 1))
+fi
 
 # 5) quiet busy dry-run: skip apt, exit 3
 out="$SIM/05-quiet-busy.txt"
@@ -218,6 +235,31 @@ else
     printf '  FAIL  could not take test lock\n'
     FAIL=$((FAIL + 1))
 fi
+
+# 9) --config owned by non-root is skipped when running as root
+printf 'info "UNTRUSTED_CONFIG_LOADED"\n' >"$SIM/user.conf"
+chown 65534:65534 "$SIM/user.conf" 2>/dev/null || chown nobody:nogroup "$SIM/user.conf"
+out="$SIM/09-untrusted-config.txt"
+rc=0
+run_uc "$out" SIM_GPU_BUSY=0 "$UC" --dry-run --offline --quiet --config "$SIM/user.conf" || rc=$?
+expect_rc "untrusted config exit" "$rc" 0
+expect_grep "untrusted config skipped" "$out" "not owned by root"
+expect_no_grep "untrusted config not sourced" "$out" "UNTRUSTED_CONFIG_LOADED"
+
+# 10) --config owned by root is loaded
+printf 'info "TRUSTED_CONFIG_LOADED"\n' >"$SIM/root.conf"
+out="$SIM/10-trusted-config.txt"
+rc=0
+run_uc "$out" SIM_GPU_BUSY=0 "$UC" --dry-run --offline --quiet --config "$SIM/root.conf" || rc=$?
+expect_rc "trusted config exit" "$rc" 0
+expect_grep "trusted config loaded" "$out" "TRUSTED_CONFIG_LOADED"
+
+# 11) missing --config path is warned, not silent
+out="$SIM/11-missing-config.txt"
+rc=0
+run_uc "$out" SIM_GPU_BUSY=0 "$UC" --dry-run --offline --quiet --config "$SIM/no-such.conf" || rc=$?
+expect_rc "missing config exit" "$rc" 0
+expect_grep "missing config warned" "$out" "not found \\(--config\\)"
 
 printf '\n=== %s passed, %s failed ===\n' "$PASS" "$FAIL"
 if [ "$FAIL" -gt 0 ]; then

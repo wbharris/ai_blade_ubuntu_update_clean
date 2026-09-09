@@ -287,12 +287,12 @@ deploy_script() {
 }
 
 run_one_host() {
-    local raw="$1"
+    local raw_host="$1"
     local target port label logfile status rc drain_rc
     local pass_q=""
 
-    IFS='|' read -r target port < <(normalize_host "$raw")
-    label="$raw"
+    IFS='|' read -r target port < <(normalize_host "$raw_host")
+    label="$raw_host"
     logfile="${RESULTS_DIR}/$(safe_label "$label").log"
     status="ok"
     rc=0
@@ -366,8 +366,7 @@ run_one_host() {
 
 run_pool() {
     local -a pids=()
-    local -a running_hosts=()
-    local h i pid
+    local h pid
 
     for h in "${HOSTS[@]}"; do
         while [[ ${#pids[@]} -ge "$PARALLEL" ]]; do
@@ -438,8 +437,8 @@ main() {
         fi
     } >"$summary"
 
-    local ok=0 fail=0 skip=0 deferred=0 other=0 host status rc logf
-    while IFS=$'\t' read -r host status rc logf; do
+    local ok=0 fail=0 skip=0 deferred=0 other=0 host status rc _logf
+    while IFS=$'\t' read -r host status rc _logf; do
         [[ "$host" == "host" ]] && continue
         [[ -z "$host" ]] && continue
         case "$status" in

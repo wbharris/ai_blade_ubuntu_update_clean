@@ -28,7 +28,7 @@
 #   - Mutating package work uses apt-get (not apt(8)); previews use apt-get -s
 #   - Optional: GPU vendor CLIs (e.g. nvidia-smi when installed), jq, docker,
 #     fwupdmgr, curl/wget, fuser/lsof (APT lock holders), logger
-# Config: /etc/update-clean.conf, root or SUDO_USER home configs (see README)
+# Config: /etc/update-clean.conf and root home configs when EUID=0 (never SUDO_USER)
 # Logs: /var/log/update-clean/ (dir 0700, files 0600; UPDATE_CLEAN_SKIP_LOGS or CI=true → $TMPDIR)
 # Exit codes: 0 = success; 1 = step failure(s); 2 = reboot deferred; 3 = skipped (GPUs busy)
 # last-run.json schema_version: 2 (stable fields; see write_last_run_json)
@@ -99,7 +99,7 @@ LAST_RUN_DIR="${LAST_RUN_DIR:-/var/lib/update-clean}"
 CRITICAL_PACKAGES=(base-files base-passwd bash coreutils util-linux)
 readonly SCRIPT_NAME="update-clean"
 # Sidecar VERSION (git tree) wins; embedded fallback for single-file install.
-readonly SCRIPT_VERSION_EMBEDDED="1.4.12"
+readonly SCRIPT_VERSION_EMBEDDED="1.4.13"
 if [ -r "$SCRIPT_DIR/VERSION" ]; then
     SCRIPT_VERSION=$(tr -d '[:space:]' <"$SCRIPT_DIR/VERSION")
 else
@@ -149,9 +149,14 @@ CLI_CONSOLE_APT_MAX_LINES=""
 CLI_CHECK=false
 CLI_LAST=false
 CLI_SHOW_VERSION=false
+EXTRA_CONFIG_FILES=()
 APT_LOCK_PROBE_WARNED=false
 ERR_DIAGNOSED=false
 TIMEOUT_MISSING_WARNED=false
+# apt-mark holds taken this run that were not already held (released on EXIT)
+declare -A PREEXISTING_HOLD_SET=()
+HOLDS_SNAPSHOT_DONE=false
+TEMP_HELD_PACKAGES=()
 
 # ────────────────────────────────────────────────────────────────
 # Colors (TTY-aware)
@@ -220,6 +225,9 @@ cleanup() {
 
     local rc=${1:-$?}
     sync 2>/dev/null || true
+    # Unhold while we still hold the instance lock so a second run cannot
+    # snapshot these packages as preexisting and leave them held.
+    release_temporary_holds
     flock -u 200 2>/dev/null || true
     # Close the fd only — do not unlink LOCKFILE. Unlinking creates a TOCTOU
     # window where a new instance can create a different inode at the same path.
@@ -227,7 +235,9 @@ cleanup() {
     # 2 = reboot deferred, 3 = skipped (GPUs busy) — not unexpected failures
     if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ] && [ "$rc" -ne 3 ]; then
         # err_trap already printed the failing command when ERR_DIAGNOSED is set
-        error "Script exited with status $rc"
+        if ! truthy "${ERR_DIAGNOSED:-false}"; then
+            error "Script exited with status $rc"
+        fi
     fi
     exit "$rc"
 }
@@ -298,21 +308,24 @@ load_config_files() {
     local conf owner
     local -a confs=(/etc/update-clean.conf)
 
+    # Root runs must not source unprivileged home files (sudoers → root via ~/.config).
     if [ "$EUID" -eq 0 ]; then
         confs+=("/root/.config/update-clean.conf" "/root/.update-clean.conf")
-        if [ -n "${SUDO_USER:-}" ] && [ -d "/home/$SUDO_USER" ]; then
-            confs+=(
-                "/home/$SUDO_USER/.config/update-clean.conf"
-                "/home/$SUDO_USER/.update-clean.conf"
-            )
-        fi
     else
         confs+=("$HOME/.config/update-clean.conf" "$HOME/.update-clean.conf")
+    fi
+    if [ "${#EXTRA_CONFIG_FILES[@]}" -gt 0 ]; then
+        for conf in "${EXTRA_CONFIG_FILES[@]}"; do
+            if [ ! -f "$conf" ]; then
+                warn "Config $conf not found (--config); skipping"
+            fi
+        done
+        confs+=("${EXTRA_CONFIG_FILES[@]}")
     fi
 
     for conf in "${confs[@]}"; do
         [ -f "$conf" ] || continue
-        if [[ "$conf" == /etc/* ]]; then
+        if [ "$EUID" -eq 0 ]; then
             owner=$(stat -c %u "$conf" 2>/dev/null || echo "invalid")
             if ! [[ "$owner" =~ ^[0-9]+$ ]] || [ "$owner" != "0" ]; then
                 warn "Config $conf not owned by root (uid=$owner); skipping"
@@ -465,14 +478,16 @@ get_avail_kb() {
     local part="$1"
     local val
 
-    val=$(df -B 1K "$part" 2>/dev/null | awk 'NR==2 {print $4+0}')
+    val=$(df -P -B 1K "$part" 2>/dev/null | awk 'NR==2 {print $4+0}')
     printf '%d' "${val:-0}"
 }
 
 get_used_kb_for_paths() {
     local sum
 
-    sum=$(df -B 1K "$@" 2>/dev/null | awk 'NR>1 {s+=$3} END {print s+0}')
+    # -P avoids wrapped device lines; dedupe by filesystem so / /var /boot on
+    # the same device is counted once (otherwise FREED_MB is 2–3× too high).
+    sum=$(df -P -B 1K "$@" 2>/dev/null | awk 'NR>1 && !seen[$1]++ {s+=$3} END {print s+0}')
     printf '%d' "${sum:-0}"
 }
 
@@ -946,9 +961,62 @@ list_gpu_hold_packages() {
 # Deprecated alias
 list_nvidia_hold_packages() { list_gpu_hold_packages; }
 
+snapshot_existing_holds() {
+    truthy "${HOLDS_SNAPSHOT_DONE:-false}" && return 0
+    HOLDS_SNAPSHOT_DONE=true
+    local p
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        PREEXISTING_HOLD_SET["$p"]=1
+    done < <(apt-mark showhold 2>/dev/null || true)
+}
+
+# Hold packages for this run only. Packages already held stay held.
+hold_packages_temporarily() {
+    local -a pkgs=("$@")
+    local p i batch=40
+
+    [ "${#pkgs[@]}" -eq 0 ] && return 0
+
+    if truthy "${DRY_RUN:-false}"; then
+        for p in "${pkgs[@]:0:15}"; do
+            info "DRY-RUN: would apt-mark hold $p (temporary)"
+        done
+        [ "${#pkgs[@]}" -gt 15 ] && info "DRY-RUN: ... and $((${#pkgs[@]} - 15)) more"
+        return 0
+    fi
+
+    snapshot_existing_holds
+    for ((i = 0; i < ${#pkgs[@]}; i += batch)); do
+        apt-mark hold "${pkgs[@]:i:batch}" 2>/dev/null || true
+    done
+    for p in "${pkgs[@]}"; do
+        if [ -z "${PREEXISTING_HOLD_SET[$p]:-}" ]; then
+            TEMP_HELD_PACKAGES+=("$p")
+            PREEXISTING_HOLD_SET["$p"]=1
+        fi
+    done
+}
+
+release_temporary_holds() {
+    local -a pkgs=()
+    local i batch=40
+
+    if [ "${#TEMP_HELD_PACKAGES[@]}" -gt 0 ]; then
+        pkgs=("${TEMP_HELD_PACKAGES[@]}")
+    fi
+    TEMP_HELD_PACKAGES=()
+    [ "${#pkgs[@]}" -eq 0 ] && return 0
+    truthy "${DRY_RUN:-false}" && return 0
+
+    info "Releasing ${#pkgs[@]} temporary apt hold(s) taken this run..."
+    for ((i = 0; i < ${#pkgs[@]}; i += batch)); do
+        apt-mark unhold "${pkgs[@]:i:batch}" 2>/dev/null || true
+    done
+}
+
 hold_gpu_packages() {
     local -a pkgs=()
-    local p
 
     truthy "$HOLD_GPU" || {
         info "HOLD_GPU disabled — not holding GPU vendor packages"
@@ -967,18 +1035,7 @@ hold_gpu_packages() {
     fi
 
     info "Holding ${#pkgs[@]} GPU/accelerator-related package(s) during cleanup..."
-    if truthy "${DRY_RUN:-false}"; then
-        for p in "${pkgs[@]:0:15}"; do
-            info "DRY-RUN: would apt-mark hold $p"
-        done
-        [ "${#pkgs[@]}" -gt 15 ] && info "DRY-RUN: ... and $((${#pkgs[@]} - 15)) more"
-        return 0
-    fi
-
-    local i batch=40
-    for ((i = 0; i < ${#pkgs[@]}; i += batch)); do
-        apt-mark hold "${pkgs[@]:i:batch}" 2>/dev/null || true
-    done
+    hold_packages_temporarily "${pkgs[@]}"
 }
 
 # Deprecated alias
@@ -1373,7 +1430,9 @@ purge_kernel_related() {
             fi
         done
         while IFS= read -r related; do
-            [ -z "$related" ] || [ "$related" = "$pkg" ] && continue
+            if [[ -z "$related" || "$related" == "$pkg" ]]; then
+                continue
+            fi
             apt_run purge "$related" || true
         done < <(
             dpkg-query -W -f='${Package}\n' 2>/dev/null \
@@ -1670,7 +1729,7 @@ hold_critical_packages() {
         warn "Could not map running kernel to a linux-image package; not adding it to the hold list"
     fi
     [ "${#to_hold[@]}" -eq 0 ] && return 0
-    apt-mark hold "${to_hold[@]}" 2>/dev/null || true
+    hold_packages_temporarily "${to_hold[@]}"
 }
 
 send_completion_notification() {
@@ -1757,6 +1816,7 @@ Usage: sudo $0 [options]
   --offline              Skip the network check
   --with-firmware        Allow fwupd (off by default)
   --reboot-if-required   Reboot if needed (blocked while GPUs are busy)
+  --config FILE          Extra config file (root-owned when run as root)
   -h, --help             Show this help
   -v, --version          Show version
 
@@ -1995,6 +2055,15 @@ while [[ $# -gt 0 ]]; do
             fi
             CLI_DOCKER_PRUNE="$1"
             DOCKER_PRUNE="$1"
+            shift
+            ;;
+        --config)
+            shift
+            if [ $# -eq 0 ]; then
+                error "--config requires a path"
+                exit 1
+            fi
+            EXTRA_CONFIG_FILES+=("$1")
             shift
             ;;
         --help|-h)

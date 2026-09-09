@@ -2,6 +2,26 @@
 
 All notable changes to this project are documented here.
 
+## [1.4.13] - 2026-09-08
+
+### Fixed
+- Root runs no longer `source` `$SUDO_USER` home configs (privilege escalation via `~/.config/update-clean.conf`)
+- GPU/critical `apt-mark hold` is temporary: snapshot existing holds, unhold this run's packages on EXIT (before releasing the instance lock)
+- `hold_critical_packages` respects `--dry-run` (no longer holds `bash`/`coreutils` on a dry-run)
+- `--config` warns when the path is missing (optional default confs stay silent)
+- Ansible summary uses `stdout_lines[-30:]` (`last(30)` crashed Jinja2)
+- `disk_freed_mb` uses `df -P` and counts each filesystem once when `/var`/`/boot` share `/`
+- `tools/md-to-pdf.sh` looks for `SIMULATION_RESULTS.md` in the repo root; executable bit set
+- Fleet runner: rename `raw` in `run_one_host` (Bash array/scalar clash)
+- Simulation harness fails fast with a sudo reminder when not root
+- Simulation harness sets `MIN_DISK_KB`/`BOOT_DISK_KB` so dry-run cases are not skipped on small developer disks
+
+### Added
+- `--config FILE` (repeatable; root-owned when EUID=0)
+
+### Changed
+- Config docs: production path is `/etc` and `/root` only under sudo
+
 ## [1.4.12] - 2026-08-18
 
 ### Changed
