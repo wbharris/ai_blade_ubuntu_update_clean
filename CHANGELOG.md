@@ -8,6 +8,9 @@ All notable changes to this project are documented here.
 - `purge_kernel_related` matches kernel version as a dash-delimited field (no longer purges `6.5.0-140*` when removing `6.5.0-14`)
 - `tools/md-to-pdf.sh` uses portable `mktemp TEMPLATE` (GNU `--suffix` broke BSD/macOS mktemp)
 
+### Changed
+- `tests/last-results.html` refreshed for the 1.4.14 harness (45 passed)
+
 ## [1.4.13] - 2026-09-08
 
 ### Fixed
