@@ -48,6 +48,9 @@
 # journalctl vacuum window (default: 30d)
 # JOURNAL_VACUUM_TIME=14d
 
+# Do not wipe pip / HuggingFace / torch caches from this script. --check reports
+# their size. Reclaim with docker prune (DOCKER_PRUNE) or a manual operator step.
+
 # Verbosity: quiet | normal | verbose (default: normal)
 # VERBOSITY=normal
 # Max apt lines on console in normal mode (0 = unlimited; full log always in APT_LOG)

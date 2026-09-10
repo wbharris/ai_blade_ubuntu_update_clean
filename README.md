@@ -4,7 +4,7 @@ One **update and cleanup** script for **Ubuntu AI / GPU compute blades** and oth
 
 Same apt safety model as [`debian_ubuntu_update_clean`](https://github.com/wbharris/debian_ubuntu_update_clean), plus GPU-host health checks, vendor-package holds, firmware caution, and container cleanup.
 
-**Version:** `1.4.14` (`VERSION` file, or `./update-clean.sh --version`). See `CHANGELOG.md` for history.
+**Version:** `1.4.15` (`VERSION` file, or `./update-clean.sh --version`). See `CHANGELOG.md` for history.
 
 Vendor-agnostic: not affiliated with any GPU or cluster vendor. Optional tools (a vendor GPU CLI, fabric units, `cmsh`) are used only when already installed.
 
@@ -134,6 +134,8 @@ Config loads after CLI parsing; explicit flags win. Use `--config /etc/update-cl
 | `KERNEL_KEEP` | `2` | Newest extra kernels to keep besides the running one (oldest extras are purged) |
 | `REBOOT_IF_REQUIRED` | `false` | Auto-reboot; blocked if GPU jobs are active (exit **2**) |
 | `SKIP_IF_GPU_BUSY` | `true` | Do not start apt while GPU jobs are running (exit **3**). Hidden override: `--no-skip-if-gpu-busy` |
+
+`--check` also lists HuggingFace / torch / pip / uv cache sizes and `docker system df`. Those caches are **not** deleted on the weekly path (re-downloading CUDA wheels would stall training). Use `DOCKER_PRUNE` for dangling images.
 
 Further keys (`VERBOSITY`, `JOURNAL_VACUUM_TIME`, `APT_LOCK_WAIT_SECS`, kernel exclude regexes, …) are documented in `update-clean.conf.example`.
 

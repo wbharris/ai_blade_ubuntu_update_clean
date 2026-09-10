@@ -99,7 +99,7 @@ LAST_RUN_DIR="${LAST_RUN_DIR:-/var/lib/update-clean}"
 CRITICAL_PACKAGES=(base-files base-passwd bash coreutils util-linux)
 readonly SCRIPT_NAME="update-clean"
 # Sidecar VERSION (git tree) wins; embedded fallback for single-file install.
-readonly SCRIPT_VERSION_EMBEDDED="1.4.14"
+readonly SCRIPT_VERSION_EMBEDDED="1.4.15"
 if [ -r "$SCRIPT_DIR/VERSION" ]; then
     SCRIPT_VERSION=$(tr -d '[:space:]' <"$SCRIPT_DIR/VERSION")
 else
@@ -531,6 +531,33 @@ report_partition_space() {
     else
         printf 'LOW (%s MB free)\n' "$((avail_kb / 1024))"
     fi
+}
+
+# Size-only: HuggingFace / pip / torch wheels are kept on purpose on GPU nodes.
+# Do not delete them from the weekly path (re-download would stall training).
+report_weighty_caches() {
+    local home name dir size found=0
+
+    printf '%s\n' "ML/tool caches (reported only; this script does not delete them):"
+    for home in /root /home/*; do
+        [ -d "$home" ] || continue
+        for name in huggingface torch pip uv go-build; do
+            dir="$home/.cache/$name"
+            [ -e "$dir" ] || continue
+            size=$(du -sh "$dir" 2>/dev/null | awk '{print $1}') || size=""
+            [ -n "$size" ] || continue
+            printf '  %s  %s\n' "$size" "$dir"
+            found=1
+        done
+    done
+    if [ "$found" -eq 0 ]; then
+        printf '  %s\n' "(none found)"
+    fi
+    if has_cmd docker && docker info >/dev/null 2>&1; then
+        printf '%s\n' "Docker disk (docker system df; dangling prune is DOCKER_PRUNE):"
+        docker system df 2>/dev/null | sed 's/^/  /' || true
+    fi
+    return 0
 }
 
 calc_disk_freed_mb() {
@@ -1936,6 +1963,8 @@ run_preflight_checks() {
     printf 'SKIP_FIRMWARE: %s  HOLD_GPU: %s  SKIP_IF_GPU_BUSY: %s  DOCKER_PRUNE: %s\n' \
         "$SKIP_FIRMWARE" "$HOLD_GPU" "$SKIP_IF_GPU_BUSY" "$DOCKER_PRUNE"
 
+    report_weighty_caches
+
     if ! truthy "${SKIP_GPU_CHECK:-false}"; then
         report_gpu_health || true
     fi
@@ -2373,6 +2402,8 @@ fi
 
 # Container image cleanup for AI blades
 docker_cleanup
+
+report_weighty_caches
 
 if has_cmd journalctl; then
     if truthy "${DRY_RUN:-false}"; then

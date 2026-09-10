@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here.
 
+## [1.4.15] - 2026-09-10
+
+### Added
+- `--check` and the weekly log report HuggingFace / torch / pip / uv / go-build cache sizes and `docker system df` **without deleting them**. GPU nodes keep those wheels on purpose; weekly wipe would re-download CUDA stacks and stall jobs.
+
+### Fixed
+- Cache inventory always returns 0 so a missing Docker socket cannot abort `--check` under `set -e`.
+- Do not use `shopt -p` (it exits 1 when an option is off and aborted the function under `set -e`).
+
 ## [1.4.14] - 2026-09-08
 
 ### Fixed
