@@ -28,9 +28,14 @@ jobs:
           bash -n tests/simulate_nvidia_blade.sh
           bash -n tests/run_simulation.sh
           bash -n tests/test_bcm_hooks.sh
+          bash -n tests/test_shell_units.sh
+          bash -n tests/simulate_amd_blade.sh
 
       - name: BCM token sanitizers
         run: bash tests/test_bcm_hooks.sh
+
+      - name: Shell unit tests (sourced functions)
+        run: bash tests/test_shell_units.sh
 
       - name: CLI smoke (non-root)
         run: |
@@ -47,3 +52,6 @@ jobs:
 
       - name: NVIDIA blade simulation
         run: sudo ./tests/simulate_nvidia_blade.sh
+
+      - name: AMD ROCm blade simulation
+        run: sudo ./tests/simulate_amd_blade.sh

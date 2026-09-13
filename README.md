@@ -252,22 +252,30 @@ fleet/                   # SSH runner
 bcm/                     # optional cmsh/pdsh hooks
 ansible/                 # optional playbook
 .github/workflows/       # ShellCheck + release
-tests/                   # NVIDIA blade simulation harness
+tests/                   # NVIDIA + AMD mocked blade harnesses; non-root unit tests
 scripts/package-release.sh
 ```
 
 ## Testing
 
 ```bash
-sudo ./tests/run_simulation.sh
-# or: sudo ./tests/simulate_nvidia_blade.sh
+bash tests/test_bcm_hooks.sh
+bash tests/test_shell_units.sh          # sourced functions; no root
+sudo ./tests/run_simulation.sh          # mocked 8× NVIDIA H100
+sudo ./tests/simulate_amd_blade.sh      # mocked 2× MI300X / ROCm
 ```
 
-Requires root: `update-clean.sh` enforces `EUID == 0` even for `--dry-run`. Without sudo the harness exits immediately with a clear error.
+Root is required for the blade harnesses: `update-clean.sh` enforces `EUID == 0` even for `--dry-run`.
 
-Mocks an 8× NVIDIA H100 blade (`nvidia-smi`, container CLI, fabric) and runs the real script: inspect modes, quiet GPU summary, skip-if-busy (exit 3), force override, dry-run disk `n/a`, hold-list warning, instance lock, `--config` ownership, and kernel-version purge matching. Latest HTML report: [`tests/last-results.html`](tests/last-results.html) (1.4.15, 45 passed).
+**What is mocked:** `nvidia-smi` / `rocm-smi` and related CLIs. This is **not** a real apt transaction on Ubuntu 22.04/24.04, and not a live NVIDIA or AMD node. Site-validate on a drained blade before production.
+
+NVIDIA harness: inspect modes, quiet GPU summary, skip-if-busy (exit 3), force override, dry-run disk `n/a`, hold-list warning, instance lock, `--config` ownership, kernel-version purge matching. Latest HTML: [`tests/last-results.html`](tests/last-results.html) (1.4.15, 45 passed).
+
+AMD harness: `--version` / `--check` / skip-if-busy / `--no-skip-if-gpu-busy` with `GPU_VENDOR_PREFER=rocm`.
 
 `SIMULATION_RESULTS.md` is a historical 1.4.5 / 4× H100 write-up, not the last harness run.
+
+The main script is still one file (`update-clean.sh`). Tests can `source` it (CLI is skipped) to unit-test helpers such as `kernel_related_grep_ere`.
 
 ## License
 

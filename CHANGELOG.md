@@ -8,8 +8,15 @@ All notable changes to this project are documented here.
 - Pin GitHub Actions to immutable commit SHAs (`actions/checkout` v4.2.2, `ludeeus/action-shellcheck` 2.0.0) instead of `@master` / floating tags
 - `bcm/bcm-hooks.sh` rejects category/status/hostname tokens and strips quotes, `$`, and shell metacharacters from drain reasons before interpolating into `cmsh -c`
 
+### Added
+- `source update-clean.sh` loads functions only (CLI does not run) for non-root unit tests
+- `kernel_related_grep_ere` shared by kernel purge and `tests/test_shell_units.sh`
+- Mocked AMD ROCm harness `tests/simulate_amd_blade.sh` (`GPU_VENDOR_PREFER=rocm`)
+- `GPU_VENDOR_PREFER=auto|nvidia|rocm|intel` so mixed nodes and the AMD sim do not always take the NVIDIA CLI first
+
 ### Changed
 - `tests/last-results.html` labeled for the 1.4.15 harness (same 45 mocked 8× H100 cases)
+- README testing section states mocked vs real-host coverage
 
 ## [1.4.15] - 2026-09-10
 

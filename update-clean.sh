@@ -790,8 +790,11 @@ detect_ai_platform() {
         fi
     fi
 
-    # Detect common GPU device nodes / vendor CLIs without branding the product
-    if has_cmd nvidia-smi || [ -e /dev/nvidia0 ] || [ -d /sys/module/nvidia ]; then
+    # Detect common GPU device nodes / vendor CLIs without branding the product.
+    # GPU_VENDOR_PREFER=rocm|intel skips NVIDIA probes (mixed nodes / AMD sim).
+    local prefer="${GPU_VENDOR_PREFER:-auto}"
+    if [[ "$prefer" != "rocm" && "$prefer" != "intel" ]] \
+        && { has_cmd nvidia-smi || [ -e /dev/nvidia0 ] || [ -d /sys/module/nvidia ]; }; then
         if [ "$AI_PLATFORM" = "generic-ubuntu" ] || [ "$AI_PLATFORM" = "gpu-server" ]; then
             AI_PLATFORM="gpu-host"
             AI_PLATFORM_DETAIL="${product:-GPU host} ${board}"
@@ -819,7 +822,8 @@ query_gpu_driver() {
 
     # Prefer whatever vendor CLI is installed (order is opportunistic).
     # Timeouts avoid indefinite hangs on broken driver stacks.
-    if has_cmd nvidia-smi; then
+    local prefer="${GPU_VENDOR_PREFER:-auto}"
+    if [[ "$prefer" != "rocm" && "$prefer" != "intel" ]] && has_cmd nvidia-smi; then
         GPU_DRIVER=$(run_with_timeout "$t" nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -n1 | tr -d '[:space:]' || true)
         GPU_RUNTIME=$(run_with_timeout "$t" nvidia-smi 2>/dev/null | awk -F'CUDA Version: ' '/CUDA Version:/ {print $2}' | awk '{print $1}' | head -n1 || true)
         GPU_COUNT=$(run_with_timeout "$t" nvidia-smi -L 2>/dev/null | grep -c '^GPU ' || true)
@@ -847,7 +851,8 @@ count_gpu_compute_processes() {
     local apps=""
     local t="${GPU_CLI_TIMEOUT_SECS:-10}"
 
-    if has_cmd nvidia-smi; then
+    local prefer="${GPU_VENDOR_PREFER:-auto}"
+    if [[ "$prefer" != "rocm" && "$prefer" != "intel" ]] && has_cmd nvidia-smi; then
         apps=$(run_with_timeout "$t" nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null | sed '/^[[:space:]]*$/d' | wc -l || true)
     elif has_cmd rocm-smi; then
         # Best-effort: count non-header process lines if supported
@@ -894,7 +899,8 @@ report_gpu_health() {
     info "GPU count: $GPU_COUNT"
 
     local t="${GPU_CLI_TIMEOUT_SECS:-10}"
-    if has_cmd nvidia-smi && [ "$GPU_COUNT" -gt 0 ]; then
+    local prefer="${GPU_VENDOR_PREFER:-auto}"
+    if [[ "$prefer" != "rocm" && "$prefer" != "intel" ]] && has_cmd nvidia-smi && [ "$GPU_COUNT" -gt 0 ]; then
         info "GPU inventory:"
         run_with_timeout "$t" nvidia-smi -L 2>/dev/null | while IFS= read -r line; do
             info "  $line"
@@ -914,7 +920,7 @@ report_gpu_health() {
 
     if truthy "${GPU_BUSY:-false}"; then
         warn "GPU compute processes active: $GPU_PROCESS_COUNT (workloads in progress)"
-        if has_cmd nvidia-smi; then
+        if [[ "$prefer" != "rocm" && "$prefer" != "intel" ]] && has_cmd nvidia-smi; then
             run_with_timeout "${GPU_CLI_TIMEOUT_SECS:-10}" nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory \
                 --format=csv 2>/dev/null | while IFS= read -r line; do
                 warn "  $line"
@@ -1444,14 +1450,20 @@ find_running_kernel_pkg() {
     return 1
 }
 
+# ERE for packages related to linux-image-<ver> (field match, not prefix).
+kernel_related_grep_ere() {
+    local ver="$1" ver_ere
+    ver_ere=$(printf '%s' "$ver" | sed 's/[][().^$+*?{|\\]/\\&/g')
+    printf '%s' "^linux-(headers|modules)(-extra|-unsigned)?-${ver_ere}($|-)"
+}
+
 purge_kernel_related() {
     local pkg="$1"
     local ver ver_ere suffix candidate related
 
     if [[ "$pkg" =~ ^linux-image-(.+)$ ]]; then
         ver="${BASH_REMATCH[1]}"
-        # Escape ERE metacharacters so 6.5.0-14 does not match 6.5.0-140.
-        ver_ere=$(printf '%s' "$ver" | sed 's/[][().^$+*?{|\\]/\\&/g')
+        ver_ere=$(kernel_related_grep_ere "$ver")
         for suffix in headers modules-extra modules modules-unsigned; do
             candidate="linux-${suffix}-${ver}"
             if dpkg-query -W -f='${Status}' "$candidate" 2>/dev/null | grep -q 'install ok installed'; then
@@ -1465,7 +1477,7 @@ purge_kernel_related() {
             apt_run purge "$related" || true
         done < <(
             dpkg-query -W -f='${Package}\n' 2>/dev/null \
-                | grep -E "^linux-(headers|modules)(-extra|-unsigned)?-${ver_ere}($|-)" || true
+                | grep -E "$ver_ere" || true
         )
     fi
 }
@@ -1971,6 +1983,11 @@ run_preflight_checks() {
 
     printf '%s\n' "=== Checks complete ==="
 }
+
+# Sourced by tests (functions + defaults only). Do not run CLI when sourced.
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+    return 0
+fi
 
 while [[ $# -gt 0 ]]; do
     case "$1" in

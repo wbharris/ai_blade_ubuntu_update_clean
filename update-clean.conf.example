@@ -69,6 +69,10 @@
 # Vendor GPU CLI hang protection (seconds)
 # GPU_CLI_TIMEOUT_SECS=10
 
+# Prefer one vendor stack when several CLIs exist (default: auto = NVIDIA then ROCm then Intel).
+# Use rocm or intel on mixed nodes or in the AMD simulation harness.
+# GPU_VENDOR_PREFER=auto
+
 # Optional completion email (requires mail command)
 # ADMIN_EMAIL=ops@example.com
 
