@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Security
+- Pin GitHub Actions to immutable commit SHAs (`actions/checkout` v4.2.2, `ludeeus/action-shellcheck` 2.0.0) instead of `@master` / floating tags
+- `bcm/bcm-hooks.sh` rejects category/status/hostname tokens and strips quotes, `$`, and shell metacharacters from drain reasons before interpolating into `cmsh -c`
+
+### Changed
+- `tests/last-results.html` labeled for the 1.4.15 harness (same 45 mocked 8× H100 cases)
+
 ## [1.4.15] - 2026-09-10
 
 ### Added

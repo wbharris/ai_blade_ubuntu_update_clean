@@ -29,6 +29,44 @@ BCM_WLM_USE="${BCM_WLM_USE:-wlm; use slurm}"
 BCM_DEVICE_CLOSED_STATUS="${BCM_DEVICE_CLOSED_STATUS:-closed}"
 BCM_DEVICE_OPEN_STATUS="${BCM_DEVICE_OPEN_STATUS:-ok}"
 
+# Category / status / hostname tokens interpolated into cmsh -c strings.
+bcm_safe_category() {
+    local s="${1:-}"
+    if [[ ! "$s" =~ ^[A-Za-z0-9._+-]{1,64}$ ]]; then
+        printf '%s\n' "invalid BCM category (1–64 of A-Za-z0-9._+-)" >&2
+        return 1
+    fi
+    printf '%s\n' "$s"
+}
+
+bcm_safe_status() {
+    local s="${1:-}"
+    if [[ ! "$s" =~ ^[A-Za-z0-9._-]{1,32}$ ]]; then
+        printf '%s\n' "invalid BCM device status (1–32 of A-Za-z0-9._-)" >&2
+        return 1
+    fi
+    printf '%s\n' "$s"
+}
+
+bcm_safe_host() {
+    local s="${1:-}"
+    [[ "$s" =~ ^[A-Za-z0-9._-]{1,253}$ ]]
+}
+
+bcm_safe_reason() {
+    local s="${1:-update-clean maintenance}"
+    s="${s//$'\n'/ }"
+    s="${s//$'\r'/}"
+    s=$(printf '%s' "$s" | tr -d '`$;|&()<>{}'\''"' | tr -s '[:space:]' ' ')
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    s="${s:0:120}"
+    if [[ -z "$s" ]]; then
+        s="update-clean maintenance"
+    fi
+    printf '%s\n' "$s"
+}
+
 bcm_have_cmsh() {
     command -v "$CMSH_BIN" >/dev/null 2>&1
 }
@@ -46,7 +84,8 @@ bcm_require_cmsh() {
 
 # List node hostnames in a device category (e.g. gpu, compute)
 bcm_list_category_nodes() {
-    local category="${1:?category required}"
+    local category
+    category=$(bcm_safe_category "${1:?category required}") || return 1
     bcm_require_cmsh
 
     # Prefer foreach over category; fall back to device list filtering
@@ -70,31 +109,41 @@ bcm_list_category_nodes() {
 
 # Close devices in category (scheduler-facing "do not place new work")
 bcm_close_category() {
-    local category="${1:?category required}"
-    local reason="${2:-update-clean maintenance}"
+    local category reason closed
+    category=$(bcm_safe_category "${1:?category required}") || return 1
+    reason=$(bcm_safe_reason "${2:-update-clean maintenance}")
+    closed=$(bcm_safe_status "$BCM_DEVICE_CLOSED_STATUS") || return 1
     bcm_require_cmsh
 
     printf '[BCM] Closing devices in category=%s reason=%s\n' "$category" "$reason" >&2
-    "$CMSH_BIN" -c "device; foreach -c ${category} (set status ${BCM_DEVICE_CLOSED_STATUS}; set notes \"${reason}\"; commit)" \
-        || "$CMSH_BIN" -c "device; foreach -c ${category} (set status ${BCM_DEVICE_CLOSED_STATUS}; commit)"
+    "$CMSH_BIN" -c "device; foreach -c ${category} (set status ${closed}; set notes \"${reason}\"; commit)" \
+        || "$CMSH_BIN" -c "device; foreach -c ${category} (set status ${closed}; commit)"
 }
 
 bcm_open_category() {
-    local category="${1:?category required}"
+    local category opened
+    category=$(bcm_safe_category "${1:?category required}") || return 1
+    opened=$(bcm_safe_status "$BCM_DEVICE_OPEN_STATUS") || return 1
     bcm_require_cmsh
 
     printf '[BCM] Opening devices in category=%s\n' "$category" >&2
-    "$CMSH_BIN" -c "device; foreach -c ${category} (set status ${BCM_DEVICE_OPEN_STATUS}; commit)"
+    "$CMSH_BIN" -c "device; foreach -c ${category} (set status ${opened}; commit)"
 }
 
 # WLM drain (Slurm via cmsh when module available)
 bcm_wlm_drain_category() {
-    local category="${1:?category required}"
-    local reason="${2:-update-clean maintenance}"
+    local category reason
     local nodes nlist
+    category=$(bcm_safe_category "${1:?category required}") || return 1
+    reason=$(bcm_safe_reason "${2:-update-clean maintenance}")
     bcm_require_cmsh
 
     mapfile -t nodes < <(bcm_list_category_nodes "$category")
+    local _n filtered=()
+    for _n in "${nodes[@]}"; do
+        bcm_safe_host "$_n" && filtered+=("$_n")
+    done
+    nodes=("${filtered[@]}")
     if [[ ${#nodes[@]} -eq 0 ]]; then
         printf '[BCM] No nodes in category %s\n' "$category" >&2
         return 1
@@ -127,11 +176,17 @@ bcm_wlm_drain_category() {
 }
 
 bcm_wlm_undrain_category() {
-    local category="${1:?category required}"
+    local category
     local nodes nlist
+    category=$(bcm_safe_category "${1:?category required}") || return 1
     bcm_require_cmsh
 
     mapfile -t nodes < <(bcm_list_category_nodes "$category")
+    local _n filtered=()
+    for _n in "${nodes[@]}"; do
+        bcm_safe_host "$_n" && filtered+=("$_n")
+    done
+    nodes=("${filtered[@]}")
     [[ ${#nodes[@]} -eq 0 ]] && return 1
     nlist=$(IFS=,; echo "${nodes[*]}")
 
@@ -158,24 +213,32 @@ bcm_wlm_undrain_category() {
 
 # Combined: close device + WLM drain
 bcm_drain_category() {
-    local category="${1:?category required}"
-    local reason="${2:-update-clean maintenance}"
+    local category reason
+    category=$(bcm_safe_category "${1:?category required}") || return 1
+    reason=$(bcm_safe_reason "${2:-update-clean maintenance}")
     bcm_close_category "$category" "$reason" || true
     bcm_wlm_drain_category "$category" "$reason" || true
 }
 
 bcm_undrain_category() {
-    local category="${1:?category required}"
+    local category
+    category=$(bcm_safe_category "${1:?category required}") || return 1
     bcm_wlm_undrain_category "$category" || true
     bcm_open_category "$category" || true
 }
 
 # Run a command on all nodes in category via pdsh (if available)
 bcm_pdsh_category() {
-    local category="${1:?category required}"
+    local category
+    category=$(bcm_safe_category "${1:?category required}") || return 1
     shift
     local nodes nlist
     mapfile -t nodes < <(bcm_list_category_nodes "$category")
+    local _n filtered=()
+    for _n in "${nodes[@]}"; do
+        bcm_safe_host "$_n" && filtered+=("$_n")
+    done
+    nodes=("${filtered[@]}")
     [[ ${#nodes[@]} -gt 0 ]] || return 1
     nlist=$(IFS=,; echo "${nodes[*]}")
 
@@ -193,9 +256,10 @@ bcm_pdsh_category() {
 
 # Full maintenance window helper
 bcm_maintenance_window() {
-    local category="${1:?category required}"
-    local reason="${2:-update-clean maintenance}"
-    local action="${3:-start}" # start|end
+    local category reason action
+    category=$(bcm_safe_category "${1:?category required}") || return 1
+    reason=$(bcm_safe_reason "${2:-update-clean maintenance}")
+    action="${3:-start}" # start|end
 
     case "$action" in
         start)

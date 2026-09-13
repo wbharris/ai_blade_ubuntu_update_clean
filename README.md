@@ -265,7 +265,7 @@ sudo ./tests/run_simulation.sh
 
 Requires root: `update-clean.sh` enforces `EUID == 0` even for `--dry-run`. Without sudo the harness exits immediately with a clear error.
 
-Mocks an 8× NVIDIA H100 blade (`nvidia-smi`, container CLI, fabric) and runs the real script: inspect modes, quiet GPU summary, skip-if-busy (exit 3), force override, dry-run disk `n/a`, hold-list warning, instance lock, `--config` ownership, and kernel-version purge matching. Latest HTML report: [`tests/last-results.html`](tests/last-results.html) (1.4.14, 45 passed).
+Mocks an 8× NVIDIA H100 blade (`nvidia-smi`, container CLI, fabric) and runs the real script: inspect modes, quiet GPU summary, skip-if-busy (exit 3), force override, dry-run disk `n/a`, hold-list warning, instance lock, `--config` ownership, and kernel-version purge matching. Latest HTML report: [`tests/last-results.html`](tests/last-results.html) (1.4.15, 45 passed).
 
 `SIMULATION_RESULTS.md` is a historical 1.4.5 / 4× H100 write-up, not the last harness run.
 
