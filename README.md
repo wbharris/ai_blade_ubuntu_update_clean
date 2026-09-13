@@ -22,6 +22,20 @@ Vendor-agnostic: not affiliated with any GPU or cluster vendor. Optional tools (
 - Firmware updates **off** (`SKIP_FIRMWARE=true`) — use site/vendor procedures on managed fleets
 - Low-space warning on `/var` (typical container-image volume)
 
+### NVIDIA vs AMD (ROCm) blades
+
+Same script. Closest non-NVIDIA stack is **AMD Instinct / ROCm** (`rocm-smi`).
+
+| Host | Extra config? |
+|------|----------------|
+| **AMD-only** (`rocm-smi`, no `nvidia-smi`) | **No.** Auto-detects ROCm. `HOLD_GPU` already covers `rocm-*`, `hip-*`, `amdgpu-*`. Busy skip uses `rocm-smi --showpids`. Firmware still off by default. |
+| **Mixed** (`nvidia-smi` *and* `rocm-smi` on PATH) | **Yes.** Set `GPU_VENDOR_PREFER=rocm` in a root-owned `/etc/update-clean.conf`, or the script prefers NVIDIA first. |
+| **NVIDIA-only** | **No.** Default `GPU_VENDOR_PREFER=auto`. |
+
+Install `coreutils` (`timeout`) on AMD hosts too so a hung `rocm-smi` cannot block the run.
+
+The Ansible example playbook still probes busy jobs with `nvidia-smi` only. On an AMD fleet, drain with `rocm-smi --showpids` (or Slurm/BCM) before the play, or extend that probe.
+
 ## Usage
 
 ```bash
@@ -120,6 +134,7 @@ HOLD_GPU=true
 SKIP_IF_GPU_BUSY=true          # abort before apt if jobs are running (exit 3)
 DOCKER_PRUNE=dangling          # none | dangling | unused
 REBOOT_IF_REQUIRED=false
+# GPU_VENDOR_PREFER=rocm       # only if nvidia-smi is also installed
 ```
 
 Root-mode configs must be owned by uid 0 and not world-writable. A `sudo` caller cannot inject root execution through `~/.config/update-clean.conf`.
@@ -261,17 +276,27 @@ scripts/package-release.sh
 ```bash
 bash tests/test_bcm_hooks.sh
 bash tests/test_shell_units.sh          # sourced functions; no root
-sudo ./tests/run_simulation.sh          # mocked 8× NVIDIA H100
-sudo ./tests/simulate_amd_blade.sh      # mocked 2× MI300X / ROCm
+sudo ./tests/run_simulation.sh          # mocked 8× NVIDIA H100 (45 cases)
+sudo ./tests/simulate_amd_blade.sh      # mocked 2× MI300X / ROCm (13 cases)
 ```
 
 Root is required for the blade harnesses: `update-clean.sh` enforces `EUID == 0` even for `--dry-run`.
 
 **What is mocked:** `nvidia-smi` / `rocm-smi` and related CLIs. This is **not** a real apt transaction on Ubuntu 22.04/24.04, and not a live NVIDIA or AMD node. Site-validate on a drained blade before production.
 
-NVIDIA harness: inspect modes, quiet GPU summary, skip-if-busy (exit 3), force override, dry-run disk `n/a`, hold-list warning, instance lock, `--config` ownership, kernel-version purge matching. Latest HTML: [`tests/last-results.html`](tests/last-results.html) (1.4.15, 45 passed).
+**NVIDIA** (`tests/run_simulation.sh` → `simulate_nvidia_blade.sh`): inspect modes, quiet GPU summary, skip-if-busy (exit 3), force override, dry-run disk `n/a`, hold-list warning, instance lock, `--config` ownership, kernel-version purge matching. Latest HTML: [`tests/last-results.html`](tests/last-results.html) (1.4.15, **45 passed**).
 
-AMD harness: `--version` / `--check` / skip-if-busy / `--no-skip-if-gpu-busy` with `GPU_VENDOR_PREFER=rocm`.
+**AMD / closest competitor** (`tests/simulate_amd_blade.sh`): mocked Instinct **MI300X** + `rocm-smi`, with `GPU_VENDOR_PREFER=rocm` so a host `nvidia-smi` cannot steal the probe (that is why ad-hoc `/tmp` copies hang or report a laptop DMI). Last run here: **13 passed, 0 failed**.
+
+| AMD case | Expect |
+|----------|--------|
+| `--version` | ROCm driver string, GPU count 2, no instance lock |
+| `--check` idle | exit 0, `GPU count: 2` |
+| `--check` busy | two PIDs via `rocm-smi --showpids` |
+| dry-run while busy | **exit 3**, no `apt-get upgrade` |
+| `--no-skip-if-gpu-busy` | exit 0, still plans upgrade |
+
+CI runs both harnesses plus `tests/test_shell_units.sh`.
 
 `SIMULATION_RESULTS.md` is a historical 1.4.5 / 4× H100 write-up, not the last harness run.
 

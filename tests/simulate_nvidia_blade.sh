@@ -35,7 +35,9 @@ set -euo pipefail
 joined="$*"
 
 if [[ "$joined" == *"--query-gpu=driver_version"* ]]; then
-    printf '%s\n' "550.127.08"
+    for i in 0 1 2 3 4 5 6 7; do
+        printf '%s\n' "550.127.08"
+    done
     exit 0
 fi
 if [[ "$joined" == *"-L"* ]]; then

@@ -70,7 +70,8 @@
 # GPU_CLI_TIMEOUT_SECS=10
 
 # Prefer one vendor stack when several CLIs exist (default: auto = NVIDIA then ROCm then Intel).
-# Use rocm or intel on mixed nodes or in the AMD simulation harness.
+# AMD-only blades: leave auto (rocm-smi is used when nvidia-smi is absent).
+# Mixed nodes (both CLIs on PATH) or tests/simulate_amd_blade.sh: GPU_VENDOR_PREFER=rocm
 # GPU_VENDOR_PREFER=auto
 
 # Optional completion email (requires mail command)

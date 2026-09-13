@@ -14,6 +14,12 @@ printf '%s\n' "linux-headers-6.5.0-14" | grep -Eq -- "$re" && pass "kernel ere m
 printf '%s\n' "linux-headers-6.5.0-140" | grep -Eq -- "$re" && fail_case "kernel ere does not match 6.5.0-140" || pass "kernel ere does not match 6.5.0-140"
 printf '%s\n' "linux-modules-extra-6.5.0-14-generic" | grep -Eq -- "$re" && pass "kernel ere matches extra-generic suffix" || fail_case "kernel ere matches extra-generic suffix"
 
+GPU_VENDOR_PREFER=auto
+nvidia_cli_ok && pass "nvidia_cli_ok auto" || fail_case "nvidia_cli_ok auto"
+GPU_VENDOR_PREFER=rocm
+nvidia_cli_ok && fail_case "nvidia_cli_ok rocm" || pass "nvidia_cli_ok rocm"
+GPU_VENDOR_PREFER=auto
+
 truthy true && pass "truthy true" || fail_case "truthy true"
 truthy false && fail_case "truthy false" || pass "truthy false"
 truthy yes && pass "truthy yes" || fail_case "truthy yes"

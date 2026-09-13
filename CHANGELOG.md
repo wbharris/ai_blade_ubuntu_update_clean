@@ -17,6 +17,8 @@ All notable changes to this project are documented here.
 ### Changed
 - `tests/last-results.html` labeled for the 1.4.15 harness (same 45 mocked 8× H100 cases)
 - README testing section states mocked vs real-host coverage
+- README: AMD MI300X harness (13 cases) and when `GPU_VENDOR_PREFER=rocm` is required on mixed nodes
+- Share `APT_LOCK_PATHS` and `nvidia_cli_ok`; NVIDIA driver query also supplies GPU count (one `nvidia-smi`, CUDA still a second call)
 
 ## [1.4.15] - 2026-09-10
 

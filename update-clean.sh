@@ -185,6 +185,21 @@ _record_failure() { EXIT_CODE=$((EXIT_CODE + 1)); }
 
 has_cmd() { command -v "$1" >/dev/null 2>&1; }
 
+# False when GPU_VENDOR_PREFER is rocm or intel (mixed node / AMD sim).
+nvidia_cli_ok() {
+    case "${GPU_VENDOR_PREFER:-auto}" in
+        rocm|intel) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+APT_LOCK_PATHS=(
+    /var/lib/dpkg/lock-frontend
+    /var/lib/dpkg/lock
+    /var/lib/apt/lists/lock
+    /var/cache/apt/archives/lock
+)
+
 # Run command with optional timeout (prevents hung vendor GPU CLIs).
 # Usage: run_with_timeout SECS cmd [args...]
 run_with_timeout() {
@@ -606,16 +621,10 @@ format_cmd_args() {
 # we return "not held" (unknown) rather than aborting on stale files. apt-get
 # still fails later if a real lock is held.
 apt_lock_held() {
-    local locks=(
-        /var/lib/dpkg/lock-frontend
-        /var/lib/dpkg/lock
-        /var/lib/apt/lists/lock
-        /var/cache/apt/archives/lock
-    )
     local lock
 
     if has_cmd fuser; then
-        for lock in "${locks[@]}"; do
+        for lock in "${APT_LOCK_PATHS[@]}"; do
             if [ -e "$lock" ] && fuser "$lock" >/dev/null 2>&1; then
                 return 0
             fi
@@ -624,7 +633,7 @@ apt_lock_held() {
     fi
 
     if has_cmd lsof; then
-        for lock in "${locks[@]}"; do
+        for lock in "${APT_LOCK_PATHS[@]}"; do
             if [ -e "$lock" ] && lsof "$lock" >/dev/null 2>&1; then
                 return 0
             fi
@@ -645,12 +654,6 @@ is_apt_locked() { apt_lock_held; }
 
 # Print lock path and PIDs holding apt/dpkg locks (best-effort).
 report_apt_lock_holders() {
-    local locks=(
-        /var/lib/dpkg/lock-frontend
-        /var/lib/dpkg/lock
-        /var/lib/apt/lists/lock
-        /var/cache/apt/archives/lock
-    )
     local lock pids
 
     if ! has_cmd fuser && ! has_cmd lsof; then
@@ -658,7 +661,7 @@ report_apt_lock_holders() {
         return 0
     fi
 
-    for lock in "${locks[@]}"; do
+    for lock in "${APT_LOCK_PATHS[@]}"; do
         [ -e "$lock" ] || continue
         pids=""
         if has_cmd fuser; then
@@ -790,11 +793,7 @@ detect_ai_platform() {
         fi
     fi
 
-    # Detect common GPU device nodes / vendor CLIs without branding the product.
-    # GPU_VENDOR_PREFER=rocm|intel skips NVIDIA probes (mixed nodes / AMD sim).
-    local prefer="${GPU_VENDOR_PREFER:-auto}"
-    if [[ "$prefer" != "rocm" && "$prefer" != "intel" ]] \
-        && { has_cmd nvidia-smi || [ -e /dev/nvidia0 ] || [ -d /sys/module/nvidia ]; }; then
+    if nvidia_cli_ok && { has_cmd nvidia-smi || [ -e /dev/nvidia0 ] || [ -d /sys/module/nvidia ]; }; then
         if [ "$AI_PLATFORM" = "generic-ubuntu" ] || [ "$AI_PLATFORM" = "gpu-server" ]; then
             AI_PLATFORM="gpu-host"
             AI_PLATFORM_DETAIL="${product:-GPU host} ${board}"
@@ -819,14 +818,13 @@ query_gpu_driver() {
     GPU_RUNTIME=""
     GPU_COUNT=0
     local t="${GPU_CLI_TIMEOUT_SECS:-10}"
+    local versions
 
-    # Prefer whatever vendor CLI is installed (order is opportunistic).
-    # Timeouts avoid indefinite hangs on broken driver stacks.
-    local prefer="${GPU_VENDOR_PREFER:-auto}"
-    if [[ "$prefer" != "rocm" && "$prefer" != "intel" ]] && has_cmd nvidia-smi; then
-        GPU_DRIVER=$(run_with_timeout "$t" nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -n1 | tr -d '[:space:]' || true)
-        GPU_RUNTIME=$(run_with_timeout "$t" nvidia-smi 2>/dev/null | awk -F'CUDA Version: ' '/CUDA Version:/ {print $2}' | awk '{print $1}' | head -n1 || true)
-        GPU_COUNT=$(run_with_timeout "$t" nvidia-smi -L 2>/dev/null | grep -c '^GPU ' || true)
+    if nvidia_cli_ok && has_cmd nvidia-smi; then
+        versions=$(run_with_timeout "$t" nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null || true)
+        GPU_DRIVER=$(printf '%s\n' "$versions" | sed '/^[[:space:]]*$/d' | head -n1 | tr -d '[:space:]')
+        GPU_COUNT=$(printf '%s\n' "$versions" | grep -c '[^[:space:]]' || true)
+        GPU_RUNTIME=$(run_with_timeout "$t" nvidia-smi 2>/dev/null | awk -F'CUDA Version: ' '/CUDA Version:/ {print $2; exit}' | awk '{print $1}' || true)
         GPU_COUNT=${GPU_COUNT:-0}
         return 0
     fi
@@ -851,8 +849,7 @@ count_gpu_compute_processes() {
     local apps=""
     local t="${GPU_CLI_TIMEOUT_SECS:-10}"
 
-    local prefer="${GPU_VENDOR_PREFER:-auto}"
-    if [[ "$prefer" != "rocm" && "$prefer" != "intel" ]] && has_cmd nvidia-smi; then
+    if nvidia_cli_ok && has_cmd nvidia-smi; then
         apps=$(run_with_timeout "$t" nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null | sed '/^[[:space:]]*$/d' | wc -l || true)
     elif has_cmd rocm-smi; then
         # Best-effort: count non-header process lines if supported
@@ -899,8 +896,7 @@ report_gpu_health() {
     info "GPU count: $GPU_COUNT"
 
     local t="${GPU_CLI_TIMEOUT_SECS:-10}"
-    local prefer="${GPU_VENDOR_PREFER:-auto}"
-    if [[ "$prefer" != "rocm" && "$prefer" != "intel" ]] && has_cmd nvidia-smi && [ "$GPU_COUNT" -gt 0 ]; then
+    if nvidia_cli_ok && has_cmd nvidia-smi && [ "$GPU_COUNT" -gt 0 ]; then
         info "GPU inventory:"
         run_with_timeout "$t" nvidia-smi -L 2>/dev/null | while IFS= read -r line; do
             info "  $line"
@@ -920,7 +916,7 @@ report_gpu_health() {
 
     if truthy "${GPU_BUSY:-false}"; then
         warn "GPU compute processes active: $GPU_PROCESS_COUNT (workloads in progress)"
-        if [[ "$prefer" != "rocm" && "$prefer" != "intel" ]] && has_cmd nvidia-smi; then
+        if nvidia_cli_ok && has_cmd nvidia-smi; then
             run_with_timeout "${GPU_CLI_TIMEOUT_SECS:-10}" nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory \
                 --format=csv 2>/dev/null | while IFS= read -r line; do
                 warn "  $line"
