@@ -9,6 +9,20 @@ fail=0
 pass() { printf '  PASS  %s\n' "$1"; }
 fail_case() { printf '  FAIL  %s\n' "$1"; fail=1; }
 
+status_re='^(install|hold) ok installed$'
+held_list=$(
+    printf '%s\n' \
+        $'hold ok installed\tlinux-image-7.0.0-31-generic' \
+        $'install ok installed\tlinux-image-6.8.0-40-generic' \
+        $'unknown ok not-installed\tlinux-image-unsigned-7.0.0-31-generic' \
+        | awk -F'\t' -v re="$status_re" '$1 ~ re {print $2}'
+)
+printf '%s\n' "$held_list" | grep -Fq 'linux-image-7.0.0-31-generic' \
+    && printf '%s\n' "$held_list" | grep -Fq 'linux-image-6.8.0-40-generic' \
+    && ! printf '%s\n' "$held_list" | grep -Fq 'linux-image-unsigned-7.0.0-31-generic' \
+    && pass "dpkg status includes hold ok installed" \
+    || fail_case "dpkg status includes hold ok installed"
+
 re=$(kernel_related_grep_ere "6.5.0-14")
 printf '%s\n' "linux-headers-6.5.0-14" | grep -Eq -- "$re" && pass "kernel ere matches 6.5.0-14 headers" || fail_case "kernel ere matches 6.5.0-14 headers"
 printf '%s\n' "linux-headers-6.5.0-140" | grep -Eq -- "$re" && fail_case "kernel ere does not match 6.5.0-140" || pass "kernel ere does not match 6.5.0-140"

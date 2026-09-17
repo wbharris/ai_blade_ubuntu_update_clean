@@ -4,7 +4,7 @@ One **update and cleanup** script for **Ubuntu AI / GPU compute blades** and oth
 
 Same apt safety model as [`debian_ubuntu_update_clean`](https://github.com/wbharris/debian_ubuntu_update_clean), plus GPU-host health checks, vendor-package holds, firmware caution, and container cleanup.
 
-**Version:** `1.4.15` (`VERSION` file, or `./update-clean.sh --version`). See `CHANGELOG.md` for history.
+**Version:** `1.4.16` (`VERSION` file, or `./update-clean.sh --version`). See `CHANGELOG.md` for history.
 
 Vendor-agnostic: not affiliated with any GPU or cluster vendor. Optional tools (a vendor GPU CLI, fabric units, `cmsh`) are used only when already installed.
 

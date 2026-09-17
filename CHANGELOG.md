@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here.
 
+## [1.4.16] - 2026-09-16
+
+### Fixed
+- Kernel and GPU hold lists treat `hold ok installed` as installed. Temporary `apt-mark hold` during cleanup made Ubuntu 26.04 look like it had no `linux-image-*` packages (same class of bug as debian_ubuntu_update_clean 1.5.9).
+
 ## [Unreleased]
 
 ### Security
