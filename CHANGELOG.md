@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Security
+- Pull-request CI no longer runs repository scripts with `sudo`; root dry-run and blade simulations run only on pushes to `main`
+- Release workflow refuses to overwrite assets on an existing tag (`--clobber` removed) and checks the tag commit
+- Release job uses job-scoped `contents: write`; workflow default is no token permissions
+- Dependabot for GitHub Actions; `CODEOWNERS` for CI/release/script paths; `SECURITY.md`
+
 ## [1.4.17] - 2026-09-16
 
 ### Added

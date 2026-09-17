@@ -1,0 +1,32 @@
+name: Privileged smoke
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+# Root is required because update-clean.sh enforces EUID 0 even for
+# --dry-run. This workflow is not used for pull_request, so untrusted PR
+# code cannot run as root on the hosted runner. No repository secrets are
+# referenced here.
+jobs:
+  privileged-smoke:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Dry-run smoke (root)
+        env:
+          UPDATE_CLEAN_SKIP_LOGS: "true"
+        run: |
+          sudo --preserve-env=UPDATE_CLEAN_SKIP_LOGS,CI \
+            ./update-clean.sh --dry-run --offline --no-gpu-check --quiet
+
+      - name: NVIDIA blade simulation
+        run: sudo ./tests/simulate_nvidia_blade.sh
+
+      - name: AMD ROCm blade simulation
+        run: sudo ./tests/simulate_amd_blade.sh
