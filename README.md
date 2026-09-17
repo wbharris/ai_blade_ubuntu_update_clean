@@ -4,7 +4,7 @@ One **update and cleanup** script for **Ubuntu AI / GPU compute blades** and oth
 
 Same apt safety model as [`debian_ubuntu_update_clean`](https://github.com/wbharris/debian_ubuntu_update_clean), plus GPU-host health checks, vendor-package holds, firmware caution, and container cleanup.
 
-**Version:** `1.4.16` (`VERSION` file, or `./update-clean.sh --version`). See `CHANGELOG.md` for history.
+**Version:** `1.4.17` (`VERSION` file, or `./update-clean.sh --version`). See `CHANGELOG.md` for history.
 
 Vendor-agnostic: not affiliated with any GPU or cluster vendor. Optional tools (a vendor GPU CLI, fabric units, `cmsh`) are used only when already installed.
 
@@ -278,6 +278,7 @@ bash tests/test_bcm_hooks.sh
 bash tests/test_shell_units.sh          # sourced functions; no root
 sudo ./tests/run_simulation.sh          # mocked 8× NVIDIA H100 (45 cases)
 sudo ./tests/simulate_amd_blade.sh      # mocked 2× MI300X / ROCm (13 cases)
+sudo ./tests/run_real_host.sh           # this machine: GPU health, dry-run, holds, kernels
 ```
 
 Root is required for the blade harnesses: `update-clean.sh` enforces `EUID == 0` even for `--dry-run`.

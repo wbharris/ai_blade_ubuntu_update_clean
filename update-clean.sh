@@ -99,7 +99,7 @@ LAST_RUN_DIR="${LAST_RUN_DIR:-/var/lib/update-clean}"
 CRITICAL_PACKAGES=(base-files base-passwd bash coreutils util-linux)
 readonly SCRIPT_NAME="update-clean"
 # Sidecar VERSION (git tree) wins; embedded fallback for single-file install.
-readonly SCRIPT_VERSION_EMBEDDED="1.4.16"
+readonly SCRIPT_VERSION_EMBEDDED="1.4.17"
 if [ -r "$SCRIPT_DIR/VERSION" ]; then
     SCRIPT_VERSION=$(tr -d '[:space:]' <"$SCRIPT_DIR/VERSION")
 else
@@ -239,7 +239,14 @@ cleanup() {
     trap - INT TERM EXIT ERR
 
     local rc=${1:-$?}
-    sync 2>/dev/null || true
+    if ! truthy "${DRY_RUN:-false}"; then
+        # LUKS/LVM hosts can stall indefinitely in uninterruptible sync.
+        if has_cmd timeout; then
+            timeout 15 sync 2>/dev/null || true
+        else
+            sync 2>/dev/null || true
+        fi
+    fi
     # Unhold while we still hold the instance lock so a second run cannot
     # snapshot these packages as preexisting and leave them held.
     release_temporary_holds
@@ -989,6 +996,32 @@ list_gpu_hold_packages() {
 
 # Deprecated alias
 list_nvidia_hold_packages() { list_gpu_hold_packages; }
+
+purge_residual_configs() {
+    local -a rc_pkgs=() skip=() filtered=()
+    local p
+
+    mapfile -t rc_pkgs < <(
+        dpkg-query -W -f='${db:Status-Abbrev} ${Package}\n' 2>/dev/null \
+            | awk '$1 == "rc" { print $2 }' || true
+    )
+    [ "${#rc_pkgs[@]}" -eq 0 ] && return 0
+
+    if [ -d /sys/firmware/efi ]; then
+        skip=(grub-pc grub-pc-bin grub-gfxpayload-lists)
+    fi
+
+    for p in "${rc_pkgs[@]}"; do
+        [ -z "$p" ] && continue
+        if [ "${#skip[@]}" -gt 0 ] && printf '%s\n' "${skip[@]}" | grep -Fxq -- "$p"; then
+            info "Skipping residual purge of $p on EFI (grub-efi in use)"
+            continue
+        fi
+        filtered+=("$p")
+    done
+    [ "${#filtered[@]}" -eq 0 ] && return 0
+    apt_run purge "${filtered[@]}"
+}
 
 snapshot_existing_holds() {
     truthy "${HOLDS_SNAPSHOT_DONE:-false}" && return 0
@@ -2296,7 +2329,9 @@ BEFORE=$(get_used_kb_for_paths / /var /boot)
 # Core update
 # ────────────────────────────────────────────────────────────────
 info "Configuring any interrupted package installations..."
-if ! dpkg --configure -a; then
+if truthy "${DRY_RUN:-false}"; then
+    info "DRY-RUN: would run: dpkg --configure -a"
+elif ! dpkg --configure -a; then
     warn "dpkg --configure -a had issues"
     _record_failure
 fi
@@ -2354,9 +2389,8 @@ else
         create_etc_backup || true
     fi
 
-    # '~c' is an apt/dpkg selection: packages in "rc" state (removed, config remains)
     info "Purging residual configuration files..."
-    apt_run purge '~c' || warn "Purging residual configs had issues"
+    purge_residual_configs || warn "Purging residual configs had issues"
 fi
 
 if truthy "${SKIP_KERNEL:-false}"; then

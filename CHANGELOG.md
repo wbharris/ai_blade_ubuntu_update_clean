@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented here.
 
+## [1.4.17] - 2026-09-16
+
+### Added
+- `tests/run_real_host.sh` — root tests on a live Ubuntu GPU host (`--check`, timed `--dry-run`, hold leak, held-kernel listing, EFI `grub-pc` skip)
+
+### Fixed
+- `--dry-run` no longer runs `dpkg --configure -a`
+- Bound live-run `sync` with `timeout 15`; skip `sync` in dry-run (LUKS/LVM stall)
+- Residual config purge skips `grub-pc` on EFI so it cannot fight `grub-efi-amd64`
+
 ## [1.4.16] - 2026-09-16
 
 ### Fixed
