@@ -29,6 +29,7 @@ cp -a \
     "$ROOT/CHANGELOG.md" \
     "$ROOT/README.md" \
     "$ROOT/LICENSE" \
+    "$ROOT/SECURITY.md" \
     "$ROOT/update-clean.conf.example" \
     "$STAGE/$NAME/"
 

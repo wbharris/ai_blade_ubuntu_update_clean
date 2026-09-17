@@ -266,7 +266,8 @@ systemd/                 # optional weekly timer
 fleet/                   # SSH runner
 bcm/                     # optional cmsh/pdsh hooks
 ansible/                 # optional playbook
-.github/workflows/       # ShellCheck + release
+.github/workflows/       # unprivileged PR CI; privileged smoke on main; release
+SECURITY.md
 tests/                   # NVIDIA + AMD mocked blade harnesses; non-root unit tests
 scripts/package-release.sh
 ```
@@ -281,7 +282,7 @@ sudo ./tests/simulate_amd_blade.sh      # mocked 2× MI300X / ROCm (13 cases)
 sudo ./tests/run_real_host.sh           # this machine: GPU health, dry-run, holds, kernels
 ```
 
-Root is required for the blade harnesses: `update-clean.sh` enforces `EUID == 0` even for `--dry-run`.
+Root is required for the blade harnesses: `update-clean.sh` enforces `EUID == 0` even for `--dry-run`. GitHub Actions therefore splits CI: pull requests run ShellCheck, `bash -n`, unit tests, and non-root CLI smoke only. Root dry-run and the mocked NVIDIA/AMD harnesses run on pushes to `main` (ephemeral hosted runner; no repository secrets).
 
 **What is mocked:** `nvidia-smi` / `rocm-smi` and related CLIs. This is **not** a real apt transaction on Ubuntu 22.04/24.04, and not a live NVIDIA or AMD node. Site-validate on a drained blade before production.
 
@@ -297,11 +298,15 @@ Root is required for the blade harnesses: `update-clean.sh` enforces `EUID == 0`
 | dry-run while busy | **exit 3**, no `apt-get upgrade` |
 | `--no-skip-if-gpu-busy` | exit 0, still plans upgrade |
 
-CI runs both harnesses plus `tests/test_shell_units.sh`.
+Pull-request CI runs `tests/test_shell_units.sh` and non-root smoke. Both harnesses run on `main` after merge.
 
 `SIMULATION_RESULTS.md` is a historical 1.4.5 / 4× H100 write-up, not the last harness run.
 
 The main script is still one file (`update-clean.sh`). Tests can `source` it (CLI is skipped) to unit-test helpers such as `kernel_related_grep_ere`.
+
+## Security
+
+See [`SECURITY.md`](SECURITY.md) for how to report vulnerabilities (private GitHub advisories; do not open a public issue for unfixed issues).
 
 ## License
 

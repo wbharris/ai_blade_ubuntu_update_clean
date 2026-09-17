@@ -1,0 +1,6 @@
+# Operational tooling and the release/CI surface.
+.github/workflows/ @wbharris
+.github/dependabot.yml @wbharris
+.github/CODEOWNERS @wbharris
+scripts/package-release.sh @wbharris
+update-clean.sh @wbharris
