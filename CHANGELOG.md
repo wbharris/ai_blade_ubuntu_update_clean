@@ -9,6 +9,7 @@ All notable changes to this project are documented here.
 - Release workflow refuses to overwrite assets on an existing tag (`--clobber` removed) and checks the tag commit
 - Release job uses job-scoped `contents: write`; workflow default is no token permissions
 - Dependabot for GitHub Actions; `CODEOWNERS` for CI/release/script paths; `SECURITY.md`
+- Pin `actions/checkout` to v7.0.1 (Node 24) so hosted runners no longer force a deprecated Node 20 runtime
 
 ## [1.4.17] - 2026-09-16
 
