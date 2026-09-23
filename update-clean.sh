@@ -30,7 +30,7 @@
 #     fwupdmgr, curl/wget, fuser/lsof (APT lock holders), logger
 # Config: /etc/update-clean.conf and root home configs when EUID=0 (never SUDO_USER)
 # Logs: /var/log/update-clean/ (dir 0700, files 0600; UPDATE_CLEAN_SKIP_LOGS or CI=true → $TMPDIR)
-# Exit codes: 0 = success; 1 = step failure(s); 2 = reboot deferred; 3 = skipped (GPUs busy)
+# Exit codes: 0 = success; 1 = step failure(s); 2 = reboot deferred; 3 = skipped (GPUs busy); 4 = GPU busy state unknown
 # last-run.json schema_version: 2 (stable fields; see write_last_run_json)
 #
 # Usage: sudo ./update-clean.sh [--dry-run] [--check] [--help] [--version]
@@ -99,7 +99,7 @@ LAST_RUN_DIR="${LAST_RUN_DIR:-/var/lib/update-clean}"
 CRITICAL_PACKAGES=(base-files base-passwd bash coreutils util-linux)
 readonly SCRIPT_NAME="update-clean"
 # Sidecar VERSION (git tree) wins; embedded fallback for single-file install.
-readonly SCRIPT_VERSION_EMBEDDED="1.4.18"
+readonly SCRIPT_VERSION_EMBEDDED="1.4.19"
 if [ -r "$SCRIPT_DIR/VERSION" ]; then
     SCRIPT_VERSION=$(tr -d '[:space:]' <"$SCRIPT_DIR/VERSION")
 else
@@ -114,6 +114,7 @@ AI_PLATFORM_DETAIL=""
 GPU_COUNT=0
 GPU_BUSY=false
 GPU_PROCESS_COUNT=0
+GPU_QUERY_OK=false
 GPU_DRIVER=""
 GPU_RUNTIME=""   # e.g. CUDA version string when a vendor tool reports it
 
@@ -1224,6 +1225,23 @@ REBOOT_REQUIRED=no
 REBOOT_DEFERRED=no
 LOG_FILE=${LOG_FILE:-}
 LAST
+            write_last_run_json \
+                "$LAST_RUN_DIR/last-run.json" \
+                "$SCRIPT_VERSION" \
+                "$DISTRO_NAME" \
+                "$AI_PLATFORM" \
+                "${GPU_DRIVER:-}" \
+                "${GPU_RUNTIME:-}" \
+                "${GPU_COUNT:-0}" \
+                "${GPU_PROCESS_COUNT:-0}" \
+                "$RUN_TIMESTAMP" \
+                "$RUN_STATUS" \
+                1 \
+                "$FREED_MB" \
+                "no" \
+                "${LOG_FILE:-}" \
+                "false" \
+                || true
             info "Last run record written to $LAST_RUN_FILE"
         else
             info "DRY-RUN: would skip the update (GPU busy state unknown)"
@@ -1250,6 +1268,7 @@ GPU_RUNTIME=${GPU_RUNTIME:-}
 GPU_COUNT=$GPU_COUNT
 GPU_BUSY=$GPU_BUSY
 GPU_PROCESS_COUNT=$GPU_PROCESS_COUNT
+GPU_QUERY_OK=true
 TIMESTAMP=$RUN_TIMESTAMP
 STATUS=$RUN_STATUS
 FAILURES=0
@@ -1273,6 +1292,7 @@ LAST
             "$FREED_MB" \
             "no" \
             "${LOG_FILE:-}" \
+            "true" \
             || true
         info "Last run record written to $LAST_RUN_FILE"
     else
@@ -1298,6 +1318,7 @@ _write_last_run_json_builtin() {
     local out="$1" schema="$2" version="$3" distro="$4" platform="$5"
     local driver="$6" cuda="$7" gpus="$8" busy_procs="$9" ts="${10}"
     local status="${11}" failures="${12}" freed="${13}" reboot="${14}" logf="${15}"
+    local query_ok="${16:-false}"
 
     cat >"$out" <<JSON
 {
@@ -1309,6 +1330,7 @@ _write_last_run_json_builtin() {
   "gpu_runtime": "$(_json_escape "$cuda")",
   "gpu_count": $gpus,
   "gpu_process_count": $busy_procs,
+  "gpu_query_ok": $query_ok,
   "timestamp": "$(_json_escape "$ts")",
   "status": "$(_json_escape "$status")",
   "failures": $failures,
@@ -1326,7 +1348,7 @@ write_last_run_json() {
     local out="$1"
     local version="$2" distro="$3" platform="$4" driver="$5" cuda="$6"
     local gpus="$7" busy_procs="$8" ts="$9" status="${10}" failures="${11}"
-    local freed="${12}" reboot="${13}" logf="${14}"
+    local freed="${12}" reboot="${13}" logf="${14}" query_ok="${15:-false}"
     local jq_err schema
     local apt_log="${APT_LOG:-/dev/null}"
 
@@ -1335,11 +1357,14 @@ write_last_run_json() {
     [[ "$gpus" =~ ^[0-9]+$ ]] || gpus=0
     [[ "$busy_procs" =~ ^[0-9]+$ ]] || busy_procs=0
     [[ "$failures" =~ ^[0-9]+$ ]] || failures=0
+    if [ "$query_ok" != "true" ]; then
+        query_ok=false
+    fi
 
     if ! has_cmd jq; then
         if _write_last_run_json_builtin "$out" "$schema" "$version" "$distro" \
             "$platform" "$driver" "$cuda" "$gpus" "$busy_procs" "$ts" \
-            "$status" "$failures" "$freed" "$reboot" "$logf"
+            "$status" "$failures" "$freed" "$reboot" "$logf" "$query_ok"
         then
             chmod 600 "$out" 2>/dev/null || true
             return 0
@@ -1365,6 +1390,7 @@ write_last_run_json() {
         --arg freed "$freed" \
         --arg reboot "$reboot" \
         --arg log "$logf" \
+        --argjson query_ok "$query_ok" \
         '{
             schema_version: $schema,
             version: $v,
@@ -1374,6 +1400,7 @@ write_last_run_json() {
             gpu_runtime: $cuda,
             gpu_count: $gpus,
             gpu_process_count: $busy_procs,
+            gpu_query_ok: $query_ok,
             timestamp: $t,
             status: $status,
             failures: $failures,
@@ -1984,7 +2011,7 @@ Usage: sudo $0 [options]
 Kernel keep count, docker prune, GPU package holds, log retention,
 and similar knobs belong in a config file — see update-clean.conf.example.
 
-Exit: 0 ok · 1 step failure(s) · 2 reboot deferred · 3 skipped (GPUs busy)
+Exit: 0 ok · 1 step failure(s) · 2 reboot deferred · 3 skipped (GPUs busy) · 4 GPU busy state unknown (update refused)
 
 Target: Ubuntu GPU / AI compute hosts (vendor-agnostic)
 USAGE
@@ -2386,10 +2413,16 @@ warn_low_partition_space "/var" "$VAR_LOW_KB"
 info "AI platform: $AI_PLATFORM${AI_PLATFORM_DETAIL:+ ($AI_PLATFORM_DETAIL)}"
 if ! truthy "${SKIP_GPU_CHECK:-false}"; then
     report_gpu_health || true
-    if truthy "${GPU_BUSY:-false}"; then
-        warn "GPUs are busy — reboot will be blocked if requested"
+    # Unknown is not idle. abort_if_gpus_busy exits 4 when the query failed
+    # and exits 3 when jobs are running, unless SKIP_IF_GPU_BUSY is off.
+    if ! truthy "${GPU_QUERY_OK:-false}" || truthy "${GPU_BUSY:-false}"; then
+        if truthy "${GPU_BUSY:-false}"; then
+            warn "GPUs are busy — reboot will be blocked if requested"
+        fi
         abort_if_gpus_busy
-        warn "SKIP_IF_GPU_BUSY is off — updates will proceed; prefer draining jobs first"
+        if ! truthy "${SKIP_IF_GPU_BUSY:-true}"; then
+            warn "SKIP_IF_GPU_BUSY is off — updates will proceed; prefer draining jobs first"
+        fi
     fi
 else
     info "Skipping GPU health checks (--no-gpu-check)"
@@ -2638,6 +2671,7 @@ GPU_RUNTIME=${GPU_RUNTIME:-}
 GPU_COUNT=$GPU_COUNT
 GPU_BUSY=$GPU_BUSY
 GPU_PROCESS_COUNT=$GPU_PROCESS_COUNT
+GPU_QUERY_OK=${GPU_QUERY_OK:-false}
 TIMESTAMP=$RUN_TIMESTAMP
 STATUS=$RUN_STATUS
 FAILURES=$EXIT_CODE
@@ -2661,6 +2695,7 @@ LAST
         "$FREED_MB" \
         "$REBOOT_FLAG" \
         "$LOG_FILE" \
+        "$(truthy "${GPU_QUERY_OK:-false}" && echo true || echo false)" \
         || warn "Failed to write $LAST_RUN_DIR/last-run.json"
     info "Last run record written to $LAST_RUN_FILE"
 else

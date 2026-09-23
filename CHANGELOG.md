@@ -4,6 +4,9 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- A direct `update-clean.sh` run now calls the GPU busy abort when the vendor query is unknown, not only when jobs were counted. Exit **4** is documented in the header and `--help`. `last-run.json` includes `gpu_query_ok` so a failed query is distinct from zero processes
+
 ### Security
 - GPU busy checks fail closed. A failed, timed-out, or missing `nvidia-smi` / `rocm-smi` on a host with a GPU device is `unknown`, not zero jobs. `SKIP_IF_GPU_BUSY` then exits **4** (`gpu_query_failed`) instead of starting apt. Fleet drain and the Ansible preflight stop instead of continuing. BCM `drain` / `undrain` return the close and scheduler failures, and the maintenance helper does not print the fleet command unless drain succeeded
 - `rocm-smi` inventory, `dcgmi`, and InfiniBand queries use `GPU_CLI_TIMEOUT_SECS`

@@ -99,7 +99,7 @@ Pass-through tip: add --quiet or --verbose after -- for console noise control on
 Inspect with -- --check (no instance lock on the node). Do not pass --reboot-if-required
 unless the category is already drained.
 
-Node rc 2 = reboot_deferred; node rc 3 = skipped_busy (SKIP_IF_GPU_BUSY).
+Node rc 2 = reboot_deferred; node rc 3 = skipped_busy (SKIP_IF_GPU_BUSY); node rc 4 = GPU query failed (a fleet failure, not idle).
 --drain-mode force adds --no-skip-if-gpu-busy on the node.
 Fleet exits: 0 ok · 1 any fail · 2 every node skipped_busy
 

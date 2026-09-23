@@ -159,9 +159,9 @@ Further keys (`VERBOSITY`, `JOURNAL_VACUUM_TIME`, `APT_LOCK_WAIT_SECS`, kernel e
 
 - Logs: `/var/log/update-clean/` (directory mode `700`, files `600`)
 - Instance lock: `/run/update-clean.lock` (fd is closed on exit; the file is left in place)
-- Last run: `/var/lib/update-clean/last-run` (`STATUS` may be `success` / `failure` / `reboot_deferred` / `skipped_busy`)
+- Last run: `/var/lib/update-clean/last-run` (`STATUS` may be `success` / `failure` / `reboot_deferred` / `skipped_busy` / `gpu_query_failed`)
 - `disk_freed_mb` is the `df -P` used-space change on unique filesystems covering `/`, `/var`, and `/boot` (same device is not counted twice; Docker/journal/snap on other volumes are not included)
-- JSON: `/var/lib/update-clean/last-run.json` — `schema_version` **2**, plus `gpu_driver`, `gpu_runtime`, counts. Written with `jq` when present, otherwise a builtin encoder
+- JSON: `/var/lib/update-clean/last-run.json` — `schema_version` **2**, plus `gpu_driver`, `gpu_runtime`, counts, and `gpu_query_ok` (`true` only after a completed vendor query). Written with `jq` when present, otherwise a builtin encoder
 - `sudo ./update-clean.sh --last` prints the record and the last 80 log lines
 - Tests: `UPDATE_CLEAN_SKIP_LOGS=true` (or `CI=true`) writes under `$TMPDIR` instead of `/var/log`
 

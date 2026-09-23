@@ -122,6 +122,49 @@ _apt_proxy_from_shell_line "HTTP_PROXY='http://ok.example/\$(id)'" >/dev/null 2>
     && fail_case "apt proxy rejects command substitution" \
     || pass "apt proxy rejects command substitution"
 
+json_out="$SIM/last-run.json"
+write_last_run_json "$json_out" "1.4.19" "ubuntu" "nvidia" "550" "12.4" 1 0 \
+    "2026-09-23 00:00:00" "gpu_query_failed" 1 "n/a" "no" "/tmp/log" "false"
+grep -q '"gpu_query_ok": false' "$json_out" && grep -q '"status": "gpu_query_failed"' "$json_out" \
+    && pass "last-run.json records gpu_query_ok false" \
+    || fail_case "last-run.json records gpu_query_ok false"
+write_last_run_json "$json_out" "1.4.19" "ubuntu" "nvidia" "550" "12.4" 1 0 \
+    "2026-09-23 00:00:00" "success" 0 "0" "no" "/tmp/log" "true"
+grep -q '"gpu_query_ok": true' "$json_out" \
+    && pass "last-run.json records gpu_query_ok true" \
+    || fail_case "last-run.json records gpu_query_ok true"
+
+if [ "$(id -u)" -eq 0 ]; then
+    direct="$SIM/direct-query-fail.txt"
+    cat >"$SIM/bin/nvidia-smi" <<'EOF'
+#!/usr/bin/env bash
+joined="$*"
+if [[ "$joined" == *"--query-gpu=driver_version"* ]]; then
+    printf '%s\n' "550.1"
+    exit 0
+fi
+if [[ "$joined" == *"--query-compute-apps=pid"* ]]; then
+    exit 9
+fi
+exit 0
+EOF
+    chmod +x "$SIM/bin/nvidia-smi"
+    set +e
+    env PATH="$SIM/bin:$PATH" UPDATE_CLEAN_SKIP_LOGS=true LOCKFILE="$SIM/direct.lock" \
+        MIN_DISK_KB=1 BOOT_DISK_KB=1 \
+        bash "$ROOT/update-clean.sh" --dry-run --offline --quiet >"$direct" 2>&1
+    direct_rc=$?
+    set -e
+    if [ "$direct_rc" -eq 4 ] && grep -q 'GPU busy state is unknown' "$direct" \
+        && ! grep -q 'DRY-RUN: would run: apt-get -y upgrade' "$direct"; then
+        pass "direct update exits 4 when nvidia-smi fails"
+    else
+        fail_case "direct update exits 4 when nvidia-smi fails (rc=$direct_rc)"
+    fi
+else
+    pass "direct update path skipped (not root)"
+fi
+
 fleet_out=$(
     bash --noprofile --norc -c '
         set -euo pipefail

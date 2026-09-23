@@ -54,6 +54,10 @@ if [[ "$joined" == *"--query-gpu=index,name"* ]]; then
     exit 0
 fi
 if [[ "$joined" == *"--query-compute-apps=pid"* ]]; then
+    if [[ "${SIM_GPU_QUERY_FAIL:-0}" == "1" ]]; then
+        printf '%s\n' "NVIDIA-SMI has failed" >&2
+        exit 9
+    fi
     if [[ "${SIM_GPU_BUSY:-0}" == "1" ]]; then
         printf '%s\n' "18421" "18422" "19004"
     fi
@@ -235,6 +239,14 @@ expect_grep "busy skip message" "$out" "SKIP_IF_GPU_BUSY: 3 GPU"
 expect_grep "busy would skip" "$out" "would skip the update"
 expect_no_grep "busy no apt upgrade" "$out" "DRY-RUN: would run: apt-get -y upgrade"
 expect_grep "busy shows jobs" "$out" "torchrun"
+
+# 5b) vendor CLI failure is not idle: direct dry-run must exit 4 before apt
+out="$SIM/05b-query-fail.txt"
+rc=0
+run_uc "$out" SIM_GPU_QUERY_FAIL=1 "$UC" --dry-run --offline --quiet || rc=$?
+expect_rc "query failure exit 4" "$rc" 4
+expect_grep "query failure message" "$out" "GPU busy state is unknown"
+expect_no_grep "query failure does not start apt" "$out" "DRY-RUN: would run: apt-get -y upgrade"
 
 # 6) --no-skip-if-gpu-busy on a busy node still plans apt
 out="$SIM/06-force-busy.txt"

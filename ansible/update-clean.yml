@@ -7,7 +7,8 @@
 #   ansible-playbook -i inventory.ini ansible/update-clean.yml
 #   ansible-playbook -i inventory.ini ansible/update-clean.yml -e dry_run=true
 #   ansible-playbook -i inventory.ini ansible/update-clean.yml -e 'extra_args=--check'
-# update-clean exit 2 (reboot deferred, GPUs busy) is success, not a failed task.
+# update-clean exit 2 (reboot deferred, GPUs busy) and exit 3 (skipped, GPUs busy) are success, not a failed task.
+# Exit 4 (GPU busy state unknown) fails the task.
 #
 # Inventory example (inventory.ini):
 #   [gpu]
