@@ -99,7 +99,7 @@ LAST_RUN_DIR="${LAST_RUN_DIR:-/var/lib/update-clean}"
 CRITICAL_PACKAGES=(base-files base-passwd bash coreutils util-linux)
 readonly SCRIPT_NAME="update-clean"
 # Sidecar VERSION (git tree) wins; embedded fallback for single-file install.
-readonly SCRIPT_VERSION_EMBEDDED="1.4.17"
+readonly SCRIPT_VERSION_EMBEDDED="1.4.18"
 if [ -r "$SCRIPT_DIR/VERSION" ]; then
     SCRIPT_VERSION=$(tr -d '[:space:]' <"$SCRIPT_DIR/VERSION")
 else
@@ -849,32 +849,52 @@ query_gpu_driver() {
 # Backward-compatible alias
 query_nvidia_driver() { query_gpu_driver; }
 
+# GPU_QUERY_OK=true only after a completed vendor query (including a real zero).
+# A missing CLI on a host with a GPU device node, a non-zero CLI exit, or a
+# timeout is unknown: callers must not treat that as idle.
 count_gpu_compute_processes() {
     GPU_PROCESS_COUNT=0
     GPU_BUSY=false
+    GPU_QUERY_OK=false
 
-    local apps=""
+    local raw="" rc=0
     local t="${GPU_CLI_TIMEOUT_SECS:-10}"
 
     if nvidia_cli_ok && has_cmd nvidia-smi; then
-        apps=$(run_with_timeout "$t" nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null | sed '/^[[:space:]]*$/d' | wc -l || true)
+        set +e
+        raw=$(run_with_timeout "$t" nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null)
+        rc=$?
+        set -e
+        if [ "$rc" -ne 0 ]; then
+            return 1
+        fi
+        GPU_PROCESS_COUNT=$(printf '%s\n' "$raw" | sed '/^[[:space:]]*$/d' | wc -l | tr -d '[:space:]')
     elif has_cmd rocm-smi; then
-        # Best-effort: count non-header process lines if supported
-        apps=$(run_with_timeout "$t" rocm-smi --showpids 2>/dev/null | grep -cE '^[0-9]' || true)
+        set +e
+        raw=$(run_with_timeout "$t" rocm-smi --showpids 2>/dev/null)
+        rc=$?
+        set -e
+        if [ "$rc" -ne 0 ]; then
+            return 1
+        fi
+        GPU_PROCESS_COUNT=$(printf '%s\n' "$raw" | grep -cE '^[0-9]' || true)
+        GPU_PROCESS_COUNT=${GPU_PROCESS_COUNT// /}
+    elif [ -e /dev/nvidia0 ] || [ -d /sys/module/nvidia ] || [ -e /dev/kfd ] || [ -d /sys/module/amdgpu ]; then
+        return 1
     else
+        GPU_QUERY_OK=true
         return 0
     fi
 
-    apps=${apps// /}
-    if [[ "$apps" =~ ^[0-9]+$ ]]; then
-        GPU_PROCESS_COUNT=$apps
-    else
+    if ! [[ "${GPU_PROCESS_COUNT}" =~ ^[0-9]+$ ]]; then
         GPU_PROCESS_COUNT=0
+        return 1
     fi
-
+    GPU_QUERY_OK=true
     if [ "$GPU_PROCESS_COUNT" -gt 0 ]; then
         GPU_BUSY=true
     fi
+    return 0
 }
 
 report_gpu_health() {
@@ -889,10 +909,10 @@ report_gpu_health() {
         return 0
     fi
 
-    count_gpu_compute_processes
+    count_gpu_compute_processes || true
 
-    # Quiet + idle: one line. Always expand when jobs are running.
-    if [ "${VERBOSITY:-normal}" = "quiet" ] && ! truthy "${GPU_BUSY:-false}"; then
+    # Quiet + idle: one line. Always expand when jobs are running or the query failed.
+    if [ "${VERBOSITY:-normal}" = "quiet" ] && truthy "${GPU_QUERY_OK:-false}" && ! truthy "${GPU_BUSY:-false}"; then
         info "GPU: driver=${GPU_DRIVER:-unknown} runtime=${GPU_RUNTIME:-n/a} gpus=${GPU_COUNT} busy=0"
         info "=== End GPU health ==="
         return 0
@@ -916,12 +936,14 @@ report_gpu_health() {
         done || true
     elif has_cmd rocm-smi; then
         info "GPU inventory (rocm-smi):"
-        rocm-smi 2>/dev/null | head -n 40 | while IFS= read -r line; do
+        run_with_timeout "$t" rocm-smi 2>/dev/null | head -n 40 | while IFS= read -r line; do
             info "  $line"
         done || true
     fi
 
-    if truthy "${GPU_BUSY:-false}"; then
+    if ! truthy "${GPU_QUERY_OK:-false}"; then
+        warn "GPU busy state is unknown (vendor query failed, timed out, or the CLI is missing while a GPU device is present)"
+    elif truthy "${GPU_BUSY:-false}"; then
         warn "GPU compute processes active: $GPU_PROCESS_COUNT (workloads in progress)"
         if nvidia_cli_ok && has_cmd nvidia-smi; then
             run_with_timeout "${GPU_CLI_TIMEOUT_SECS:-10}" nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory \
@@ -946,7 +968,7 @@ report_gpu_health() {
 
     if has_cmd dcgmi; then
         info "GPU manager discovery (dcgmi):"
-        dcgmi discovery -l 2>/dev/null | head -n 40 | while IFS= read -r line; do
+        run_with_timeout "$t" dcgmi discovery -l 2>/dev/null | head -n 40 | while IFS= read -r line; do
             info "  $line"
         done || warn "dcgmi discovery failed"
     fi
@@ -954,12 +976,12 @@ report_gpu_health() {
     # High-speed interconnect peek when present
     if has_cmd ibstat; then
         info "InfiniBand adapters (ibstat summary):"
-        ibstat 2>/dev/null | awk '/^CA |^[[:space:]]*State:|^[[:space:]]*Rate:|^[[:space:]]*Physical state:/ {print}' | head -n 40 | while IFS= read -r line; do
+        run_with_timeout "$t" ibstat 2>/dev/null | awk '/^CA |^[[:space:]]*State:|^[[:space:]]*Rate:|^[[:space:]]*Physical state:/ {print}' | head -n 40 | while IFS= read -r line; do
             info "  $line"
         done || true
     elif has_cmd ibv_devinfo; then
         info "RDMA devices:"
-        ibv_devinfo -l 2>/dev/null | while IFS= read -r line; do
+        run_with_timeout "$t" ibv_devinfo -l 2>/dev/null | while IFS= read -r line; do
             info "  $line"
         done || true
     fi
@@ -1155,7 +1177,11 @@ docker_cleanup() {
 
 guard_reboot_if_gpus_busy() {
     # Called when reboot is requested; returns 1 to block reboot
-    count_gpu_compute_processes
+    if ! count_gpu_compute_processes; then
+        error "Refusing reboot: GPU busy state is unknown"
+        error "The vendor GPU query failed or timed out; do not reboot until it succeeds"
+        return 1
+    fi
     if truthy "${GPU_BUSY:-false}"; then
         error "Refusing reboot: $GPU_PROCESS_COUNT GPU compute process(es) still running"
         error "Drain workloads or re-run with maintenance window; use --offline after drain if needed"
@@ -1165,10 +1191,45 @@ guard_reboot_if_gpus_busy() {
 }
 
 # Exit 3 before apt when GPU jobs are running (SKIP_IF_GPU_BUSY, default true).
+# Exit 4 when the busy query did not succeed. That is not "zero jobs".
 abort_if_gpus_busy() {
     truthy "${SKIP_IF_GPU_BUSY:-true}" || return 0
     truthy "${SKIP_GPU_CHECK:-false}" && return 0
-    count_gpu_compute_processes
+    if ! count_gpu_compute_processes; then
+        error "SKIP_IF_GPU_BUSY: GPU busy state is unknown — not starting apt"
+        error "Vendor query failed or timed out. Fix nvidia-smi/rocm-smi, or re-run with --no-skip-if-gpu-busy"
+        FREED_MB="n/a"
+        RUN_STATUS=gpu_query_failed
+        GPU_BUSY=false
+        GPU_PROCESS_COUNT=0
+        if ! truthy "${DRY_RUN:-false}"; then
+            mkdir -p "$LAST_RUN_DIR"
+            LAST_RUN_FILE="$LAST_RUN_DIR/last-run"
+            RUN_TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+            cat > "$LAST_RUN_FILE" << LAST
+VERSION=$SCRIPT_VERSION
+DISTRO=$DISTRO_NAME
+AI_PLATFORM=$AI_PLATFORM
+GPU_DRIVER=${GPU_DRIVER:-}
+GPU_RUNTIME=${GPU_RUNTIME:-}
+GPU_COUNT=$GPU_COUNT
+GPU_BUSY=$GPU_BUSY
+GPU_PROCESS_COUNT=$GPU_PROCESS_COUNT
+GPU_QUERY_OK=false
+TIMESTAMP=$RUN_TIMESTAMP
+STATUS=$RUN_STATUS
+FAILURES=1
+DISK_FREED_MB=$FREED_MB
+REBOOT_REQUIRED=no
+REBOOT_DEFERRED=no
+LOG_FILE=${LOG_FILE:-}
+LAST
+            info "Last run record written to $LAST_RUN_FILE"
+        else
+            info "DRY-RUN: would skip the update (GPU busy state unknown)"
+        fi
+        exit 4
+    fi
     truthy "${GPU_BUSY:-false}" || return 0
 
     warn "SKIP_IF_GPU_BUSY: $GPU_PROCESS_COUNT GPU compute process(es) — not starting apt"
@@ -1361,9 +1422,33 @@ _proxy_display() {
     printf '%s' "$u" | sed -E 's#(://)[^/@]+@#\1***@#'
 }
 
+# apt-config shell emits VAR='value'. Accept only that shape and an http(s) URL.
+# Do not eval the text: a hostile apt config must not become root shell.
+_apt_proxy_from_shell_line() {
+    local line="$1" name value re
+    [ -n "$line" ] || return 0
+    re="^(HTTP_PROXY|HTTPS_PROXY)='([^']*)'$"
+    if [[ ! "$line" =~ $re ]]; then
+        return 1
+    fi
+    name="${BASH_REMATCH[1]}"
+    value="${BASH_REMATCH[2]}"
+    [ -n "$value" ] || return 0
+    case "$value" in
+        *'`'*|*'$*'*|*';'*|*'|'*|*'&'*|*'<'*|*'>'*|*'('*|*')'*|*'{'*|*'}'*|*' '*)
+            return 1
+            ;;
+    esac
+    re='^https?://[^[:space:]]+$'
+    if [[ ! "$value" =~ $re ]]; then
+        return 1
+    fi
+    printf '%s=%s\n' "$name" "$value"
+}
+
 # Load apt Acquire::http(s)::Proxy into env if not already set (restricted nets).
 load_apt_proxy_env() {
-    local conf_out http_p https_p
+    local conf_out line parsed http_p="" https_p=""
 
     if [ -n "${http_proxy:-}${HTTP_PROXY:-}${https_proxy:-}${HTTPS_PROXY:-}" ]; then
         return 0
@@ -1373,10 +1458,17 @@ load_apt_proxy_env() {
     fi
 
     conf_out=$(apt-config shell HTTP_PROXY Acquire::http::Proxy HTTPS_PROXY Acquire::https::Proxy 2>/dev/null || true)
-    # apt-config shell emits: HTTP_PROXY='http://...'
-    eval "$conf_out" 2>/dev/null || true
-    http_p="${HTTP_PROXY:-}"
-    https_p="${HTTPS_PROXY:-}"
+    while IFS= read -r line || [ -n "$line" ]; do
+        [ -n "$line" ] || continue
+        if ! parsed=$(_apt_proxy_from_shell_line "$line"); then
+            warn "Ignoring APT proxy from apt-config; assignment was not a plain http(s) URL"
+            return 0
+        fi
+        case "$parsed" in
+            HTTP_PROXY=*) http_p="${parsed#HTTP_PROXY=}" ;;
+            HTTPS_PROXY=*) https_p="${parsed#HTTPS_PROXY=}" ;;
+        esac
+    done <<< "$conf_out"
     if [ -n "$http_p" ] && [ -z "${http_proxy:-}" ]; then
         export http_proxy="$http_p"
         export HTTP_PROXY="$http_p"
@@ -2499,7 +2591,11 @@ if [ "$REBOOT_DURING_RUN" = true ]; then
     warn "Reboot is required to complete some updates."
     if truthy "${REBOOT_IF_REQUIRED:-false}" && ! truthy "${DRY_RUN:-false}"; then
         if ! truthy "${SKIP_GPU_CHECK:-false}" && ! guard_reboot_if_gpus_busy; then
-            warn "Reboot deferred because GPUs are busy (exit 2; update itself is not a failure)"
+            if truthy "${GPU_QUERY_OK:-false}"; then
+                warn "Reboot deferred because GPUs are busy (exit 2; update itself is not a failure)"
+            else
+                warn "Reboot deferred because GPU busy state is unknown (exit 2; update itself is not a failure)"
+            fi
             REBOOT_DEFERRED=true
         else
             info "REBOOT_IF_REQUIRED set; rebooting now"
@@ -2509,8 +2605,9 @@ if [ "$REBOOT_DURING_RUN" = true ]; then
     else
         warn "Run: sudo reboot (or use --reboot-if-required) after draining GPU jobs"
         if ! truthy "${SKIP_GPU_CHECK:-false}"; then
-            count_gpu_compute_processes
-            if truthy "${GPU_BUSY:-false}"; then
+            if ! count_gpu_compute_processes; then
+                warn "GPU busy state is unknown — do not reboot until nvidia-smi or rocm-smi succeeds"
+            elif truthy "${GPU_BUSY:-false}"; then
                 warn "Currently $GPU_PROCESS_COUNT GPU process(es) — do not reboot until drained"
             fi
         fi

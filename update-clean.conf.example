@@ -66,7 +66,8 @@
 # APT_LOCK_WAIT_SECS=60
 # APT_LOCK_POLL_SECS=5
 
-# Vendor GPU CLI hang protection (seconds)
+# Vendor GPU CLI hang protection (seconds). A timed-out query is "unknown",
+# and SKIP_IF_GPU_BUSY then refuses the update (exit 4) instead of assuming idle.
 # GPU_CLI_TIMEOUT_SECS=10
 
 # Prefer one vendor stack when several CLIs exist (default: auto = NVIDIA then ROCm then Intel).

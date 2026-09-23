@@ -39,34 +39,67 @@
 
     - name: Check GPU compute process count
       ansible.builtin.shell: |
+        set -o pipefail
+        t="${GPU_CLI_TIMEOUT_SECS:-10}"
+        run_to() {
+          if command -v timeout >/dev/null 2>&1; then
+            timeout --signal=TERM --kill-after=2 "$t" "$@"
+          else
+            "$@"
+          fi
+        }
         if command -v nvidia-smi >/dev/null 2>&1; then
-          nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null \
-            | sed '/^[[:space:]]*$/d' | wc -l
+          if ! out=$(run_to nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null); then
+            printf 'unknown\n'
+            exit 0
+          fi
+          printf '%s\n' "$out" | sed '/^[[:space:]]*$/d' | wc -l
           exit 0
         fi
         if command -v rocm-smi >/dev/null 2>&1; then
-          rocm-smi --showpids 2>/dev/null | grep -cE '^[0-9]' || echo 0
+          if ! out=$(run_to rocm-smi --showpids 2>/dev/null); then
+            printf 'unknown\n'
+            exit 0
+          fi
+          n=$(printf '%s\n' "$out" | grep -cE '^[0-9]' || true)
+          printf '%s\n' "${n// /}"
           exit 0
         fi
-        echo 0
+        printf 'unknown\n'
       args:
         executable: /bin/bash
       register: gpu_busy
       changed_when: false
       failed_when: false
 
+    - name: Classify GPU busy probe
+      ansible.builtin.set_fact:
+        gpu_busy_state: >-
+          {{
+            'idle' if (gpu_busy.stdout | default('') | trim) == '0'
+            else 'busy' if (gpu_busy.stdout | default('') | trim) is match('^[1-9][0-9]*$')
+            else 'unknown'
+          }}
+
+    - name: Refuse update when GPU busy state is unknown
+      ansible.builtin.fail:
+        msg: "Refusing to update {{ inventory_hostname }}: GPU busy state is unknown"
+      when:
+        - skip_if_gpu_busy | bool
+        - gpu_busy_state == 'unknown'
+
     - name: Skip node when GPUs are busy
       ansible.builtin.debug:
         msg: "Skipping {{ inventory_hostname }} — {{ gpu_busy.stdout | trim }} GPU process(es)"
       when:
         - skip_if_gpu_busy | bool
-        - (gpu_busy.stdout | trim | int) > 0
+        - gpu_busy_state == 'busy'
 
     - name: Run update-clean
       ansible.builtin.command:
         argv: "{{ ([update_clean_dest] + (extra_args.split() if extra_args else []) + (['--dry-run'] if dry_run else [])) }}"
       register: uc_result
-      when: not (skip_if_gpu_busy | bool) or (gpu_busy.stdout | default('0') | trim | int) == 0
+      when: (not (skip_if_gpu_busy | bool)) or gpu_busy_state == 'idle'
       # 0 = ok; 2 = reboot deferred; 3 = skipped (GPUs busy)
       changed_when: not dry_run and (uc_result.rc | default(0) | int) == 0
       failed_when: (uc_result.rc | default(1) | int) not in [0, 2, 3]

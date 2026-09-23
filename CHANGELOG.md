@@ -5,6 +5,10 @@ All notable changes to this project are documented here.
 ## [Unreleased]
 
 ### Security
+- GPU busy checks fail closed. A failed, timed-out, or missing `nvidia-smi` / `rocm-smi` on a host with a GPU device is `unknown`, not zero jobs. `SKIP_IF_GPU_BUSY` then exits **4** (`gpu_query_failed`) instead of starting apt. Fleet drain and the Ansible preflight stop instead of continuing. BCM `drain` / `undrain` return the close and scheduler failures, and the maintenance helper does not print the fleet command unless drain succeeded
+- `rocm-smi` inventory, `dcgmi`, and InfiniBand queries use `GPU_CLI_TIMEOUT_SECS`
+- APT proxy values are parsed as single-quoted `http(s)` URLs and are not `eval`'d
+- Fleet SSH defaults to `StrictHostKeyChecking=yes`. `SSH_STRICT_HOST_KEY_CHECKING=accept-new` is the explicit first-contact convenience
 - Pull-request CI no longer runs repository scripts with `sudo`; root dry-run and blade simulations run only on pushes to `main`
 - Release workflow refuses to overwrite assets on an existing tag (`--clobber` removed) and checks the tag commit
 - Release job uses job-scoped `contents: write`; workflow default is no token permissions

@@ -13,8 +13,9 @@
 #   2) fleet runner --from-bcm-category gpu --deploy --
 #   3) bcm_undrain_category gpu
 #
-# These commands are best-effort wrappers around cmsh. Exact WLM module names
-# vary by site (slurm, pbs, etc.). Override with env vars below.
+# Drain and undrain return failure when close or scheduler drain does not
+# succeed. Exact WLM module names vary by site (slurm, pbs, etc.). Override
+# with the environment variables below.
 
 set -euo pipefail
 
@@ -165,11 +166,11 @@ bcm_wlm_drain_category() {
     fi
     # Fall back to scontrol on head if available
     if command -v scontrol >/dev/null 2>&1; then
-        local n
+        local n rc=0
         for n in "${nodes[@]}"; do
-            scontrol update NodeName="$n" State=DRAIN Reason="$reason" || true
+            scontrol update NodeName="$n" State=DRAIN Reason="$reason" || rc=1
         done
-        return 0
+        return "$rc"
     fi
     printf '[BCM] WLM drain failed — use site-specific cmsh or scontrol\n' >&2
     return 1
@@ -202,29 +203,31 @@ bcm_wlm_undrain_category() {
         return 0
     fi
     if command -v scontrol >/dev/null 2>&1; then
-        local n
+        local n rc=0
         for n in "${nodes[@]}"; do
-            scontrol update NodeName="$n" State=RESUME || true
+            scontrol update NodeName="$n" State=RESUME || rc=1
         done
-        return 0
+        return "$rc"
     fi
     return 1
 }
 
-# Combined: close device + WLM drain
+# Combined: close device + WLM drain. Both must succeed.
 bcm_drain_category() {
-    local category reason
+    local category reason rc=0
     category=$(bcm_safe_category "${1:?category required}") || return 1
     reason=$(bcm_safe_reason "${2:-update-clean maintenance}")
-    bcm_close_category "$category" "$reason" || true
-    bcm_wlm_drain_category "$category" "$reason" || true
+    bcm_close_category "$category" "$reason" || rc=1
+    bcm_wlm_drain_category "$category" "$reason" || rc=1
+    return "$rc"
 }
 
 bcm_undrain_category() {
-    local category
+    local category rc=0
     category=$(bcm_safe_category "${1:?category required}") || return 1
-    bcm_wlm_undrain_category "$category" || true
-    bcm_open_category "$category" || true
+    bcm_wlm_undrain_category "$category" || rc=1
+    bcm_open_category "$category" || rc=1
+    return "$rc"
 }
 
 # Run a command on all nodes in category via pdsh (if available)
@@ -263,13 +266,19 @@ bcm_maintenance_window() {
 
     case "$action" in
         start)
-            bcm_drain_category "$category" "$reason"
+            if ! bcm_drain_category "$category" "$reason"; then
+                printf '[BCM] Drain failed for category=%s — not ready for the fleet update\n' "$category" >&2
+                return 1
+            fi
             printf '[BCM] Maintenance START category=%s — run fleet update next\n' "$category"
             printf '  %s/../fleet/update-clean-fleet.sh --from-bcm-category %s --deploy --drain-mode skip --\n' \
                 "$BCM_DIR" "$category"
             ;;
         end)
-            bcm_undrain_category "$category"
+            if ! bcm_undrain_category "$category"; then
+                printf '[BCM] Undrain failed for category=%s — nodes may still be closed or drained\n' "$category" >&2
+                return 1
+            fi
             printf '[BCM] Maintenance END category=%s — nodes reopened/undrained\n' "$category"
             ;;
         *)

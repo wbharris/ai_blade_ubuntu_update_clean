@@ -34,7 +34,7 @@ Same script. Closest non-NVIDIA stack is **AMD Instinct / ROCm** (`rocm-smi`).
 
 Install `coreutils` (`timeout`) on AMD hosts too so a hung `rocm-smi` cannot block the run.
 
-The Ansible example playbook still probes busy jobs with `nvidia-smi` only. On an AMD fleet, drain with `rocm-smi --showpids` (or Slurm/BCM) before the play, or extend that probe.
+The Ansible example playbook probes `nvidia-smi` or `rocm-smi` and refuses the update when that query fails.
 
 ## Usage
 
@@ -99,8 +99,9 @@ Run weekly during a maintenance window after draining workloads. Do not use `--r
 | `1` | One or more steps failed (count is `FAILURES` in the last-run record) |
 | `2` | Update finished; reboot was requested but **deferred** because GPU jobs are still running |
 | `3` | Update **skipped** — GPU compute jobs were running (`SKIP_IF_GPU_BUSY`, default true) |
+| `4` | Update **not started** — GPU busy state is unknown (vendor CLI failed, timed out, or is missing while a GPU device is present) |
 
-Exit `2` and `3` are not failed updates. Fleet and Ansible treat them as skip / reboot-later, not `fail`.
+Exit `2` and `3` are not failed updates. Fleet and Ansible treat them as skip / reboot-later, not `fail`. Exit `4` is a failed safety check: the node is not idle.
 
 `--quiet` prints a one-line GPU summary unless jobs are running. `--check` (normal verbosity) still prints the full health report.
 
@@ -148,7 +149,7 @@ Config loads after CLI parsing; explicit flags win. Use `--config /etc/update-cl
 | `DOCKER_PRUNE` | `dangling` | `none` / `dangling` / `unused` |
 | `KERNEL_KEEP` | `2` | Newest extra kernels to keep besides the running one (oldest extras are purged) |
 | `REBOOT_IF_REQUIRED` | `false` | Auto-reboot; blocked if GPU jobs are active (exit **2**) |
-| `SKIP_IF_GPU_BUSY` | `true` | Do not start apt while GPU jobs are running (exit **3**). Hidden override: `--no-skip-if-gpu-busy` |
+| `SKIP_IF_GPU_BUSY` | `true` | Do not start apt while GPU jobs are running (exit **3**) or while the vendor query fails (exit **4**). Hidden override: `--no-skip-if-gpu-busy` |
 
 `--check` also lists HuggingFace / torch / pip / uv cache sizes and `docker system df`. Those caches are **not** deleted on the weekly path (re-downloading CUDA wheels would stall training). Use `DOCKER_PRUNE` for dangling images.
 
@@ -211,14 +212,16 @@ cp fleet/hosts.example fleet/hosts
 ./fleet/update-clean-fleet.sh -f fleet/hosts --deploy --drain-mode wait --drain-wait 3600 --
 ```
 
-Drain modes: `skip` (default), `wait`, `force`. Per-run logs and `summary.tsv` land in `fleet-runs/<timestamp>/` (gitignored).
+Drain modes: `skip` (default), `wait`, `force`. A GPU query that fails or times out is `drain_error`, not an idle node. Per-run logs and `summary.tsv` land in `fleet-runs/<timestamp>/` (gitignored).
+
+SSH uses `StrictHostKeyChecking=yes`. Install blade keys in `known_hosts` before the first run. `SSH_STRICT_HOST_KEY_CHECKING=accept-new` trusts the first key a host offers; that is a convenience, not a check that the host is the one you expect. `SSH_KNOWN_HOSTS_FILE` selects the file.
 
 | Node / row status | Meaning |
 |-------------------|---------|
 | `ok` / `dry_run` | Succeeded |
 | `skipped_busy` | Drain policy skipped the node, or the node script exited **3** (`SKIP_IF_GPU_BUSY`) |
 | `reboot_deferred` | Node update finished; reboot blocked (update-clean **exit 2**) |
-| `fail` / `deploy_fail` / `drain_error` | Real failure |
+| `fail` / `deploy_fail` / `drain_error` | Real failure, including a GPU busy query that did not succeed |
 
 Fleet process exits: **0** if nothing failed, **1** if any node failed, **2** if every node was `skipped_busy`. `reboot_deferred` is not a fleet failure.
 

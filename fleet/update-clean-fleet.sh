@@ -25,7 +25,32 @@ HOSTS_FILE=""
 HOSTS_CSV=""
 FROM_BCM_CATEGORY=""
 SSH_USER="${SSH_USER:-}"
-SSH_OPTS=("-o" "BatchMode=yes" "-o" "StrictHostKeyChecking=accept-new" "-o" "ConnectTimeout=15")
+# yes requires a pre-provisioned known_hosts. accept-new trusts the first key
+# a host presents; set SSH_STRICT_HOST_KEY_CHECKING=accept-new only when that
+# convenience is intentional.
+_SSH_STRICT="${SSH_STRICT_HOST_KEY_CHECKING:-yes}"
+case "$_SSH_STRICT" in
+    yes|no|accept-new|off) ;;
+    *)
+        printf '[ERROR] SSH_STRICT_HOST_KEY_CHECKING must be yes, no, accept-new, or off\n' >&2
+        if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+            return 1
+        fi
+        exit 1
+        ;;
+esac
+SSH_OPTS=("-o" "BatchMode=yes" "-o" "StrictHostKeyChecking=${_SSH_STRICT}" "-o" "ConnectTimeout=15")
+if [[ -n "${SSH_KNOWN_HOSTS_FILE:-}" ]]; then
+    _kh_re='^/[^[:space:];|&$`]+$'
+    if [[ ! "$SSH_KNOWN_HOSTS_FILE" =~ $_kh_re ]]; then
+        printf '[ERROR] SSH_KNOWN_HOSTS_FILE must be an absolute path without shell metacharacters\n' >&2
+        if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+            return 1
+        fi
+        exit 1
+    fi
+    SSH_OPTS+=("-o" "UserKnownHostsFile=${SSH_KNOWN_HOSTS_FILE}")
+fi
 REMOTE_PATH="${REMOTE_PATH:-/usr/local/sbin/update-clean.sh}"
 PARALLEL="${PARALLEL:-1}"
 DRAIN_MODE="${DRAIN_MODE:-skip}"   # skip | wait | force
@@ -50,6 +75,10 @@ Inventory (pick at least one):
 SSH / deploy:
   -u, --ssh-user USER       Default SSH user (if host has no user@)
   -o, --ssh-opt OPT         Extra ssh -o option (repeatable)
+
+Host keys default to StrictHostKeyChecking=yes (a pre-provisioned known_hosts).
+SSH_STRICT_HOST_KEY_CHECKING=accept-new trusts the first key seen for a host.
+SSH_KNOWN_HOSTS_FILE=/path sets UserKnownHostsFile.
   --remote-path PATH        Remote script path (default: /usr/local/sbin/update-clean.sh)
   --deploy                  scp local update-clean.sh to remote-path before run
   -p, --parallel N          Concurrent nodes (default: 1)
@@ -213,12 +242,41 @@ ssh_cmd() {
 remote_gpu_busy_count() {
     local target="$1" port="$2"
     local out remote_script
-    # Single remote one-liner avoids heredoc-inside-$(...) parse issues
-    remote_script='if command -v nvidia-smi >/dev/null 2>&1; then n=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null | sed "/^[[:space:]]*$/d" | wc -l); echo "${n// /}"; exit 0; fi; if command -v rocm-smi >/dev/null 2>&1; then n=$(rocm-smi --showpids 2>/dev/null | grep -cE "^[0-9]" || echo 0); echo "${n// /}"; exit 0; fi; echo 0'
-    out=$(ssh_cmd "$target" "$port" "bash -c $(printf '%q' "$remote_script")" 2>/dev/null) || {
-        echo "err"
+    # Prints a non-negative integer, or "unknown" when the query did not succeed.
+    # A failed nvidia-smi/rocm-smi must not look like zero jobs.
+    remote_script=$(cat <<'EOS'
+t=${GPU_CLI_TIMEOUT_SECS:-10}
+run_to() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout --signal=TERM --kill-after=2 "$t" "$@"
+    else
+        "$@"
+    fi
+}
+if command -v nvidia-smi >/dev/null 2>&1; then
+    if ! out=$(run_to nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null); then
+        printf 'unknown\n'
+        exit 0
+    fi
+    printf '%s\n' "$out" | sed '/^[[:space:]]*$/d' | wc -l | tr -d '[:space:]'
+    exit 0
+fi
+if command -v rocm-smi >/dev/null 2>&1; then
+    if ! out=$(run_to rocm-smi --showpids 2>/dev/null); then
+        printf 'unknown\n'
+        exit 0
+    fi
+    n=$(printf '%s\n' "$out" | grep -cE '^[0-9]' || true)
+    printf '%s\n' "${n// /}"
+    exit 0
+fi
+printf 'unknown\n'
+EOS
+)
+    if ! out=$(ssh_cmd "$target" "$port" "bash -c $(printf '%q' "$remote_script")" 2>/dev/null); then
+        printf 'unknown\n'
         return 0
-    }
+    fi
     printf '%s\n' "$(printf '%s\n' "$out" | tail -n1 | tr -d '[:space:]')"
 }
 
@@ -235,9 +293,9 @@ wait_or_skip_drain() {
     count=$(remote_gpu_busy_count "$target" "$port" || true)
     count=$(printf '%s' "$count" | tail -n1 | tr -d '[:space:]')
 
-    if [[ "$count" == "err" || ! "$count" =~ ^[0-9]+$ ]]; then
-        warn "$label: could not query GPU busy state; proceeding"
-        return 0
+    if [[ ! "$count" =~ ^[0-9]+$ ]]; then
+        warn "$label: GPU busy state unknown (${count:-empty}); refusing to continue"
+        return 1
     fi
 
     if [[ "$count" -eq 0 ]]; then
@@ -256,7 +314,11 @@ wait_or_skip_drain() {
         sleep "$DRAIN_POLL_SEC"
         count=$(remote_gpu_busy_count "$target" "$port" || true)
         count=$(printf '%s' "$count" | tail -n1 | tr -d '[:space:]')
-        if [[ "$count" =~ ^[0-9]+$ && "$count" -eq 0 ]]; then
+        if [[ ! "$count" =~ ^[0-9]+$ ]]; then
+            warn "$label: GPU busy state unknown during drain wait (${count:-empty})"
+            return 1
+        fi
+        if [[ "$count" -eq 0 ]]; then
             info "$label: GPUs now idle"
             return 0
         fi
@@ -467,5 +529,9 @@ main() {
     fi
     exit 0
 }
+
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+    return 0
+fi
 
 main "$@"

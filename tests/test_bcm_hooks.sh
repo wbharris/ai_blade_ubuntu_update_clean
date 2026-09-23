@@ -38,5 +38,54 @@ else
     pass "reject status injection"
 fi
 
+SIM=$(mktemp -d "${TMPDIR:-/tmp}/bcm-units.XXXXXX")
+trap 'rm -rf "$SIM"' EXIT
+cat >"$SIM/cmsh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${CMSH_LOG:?}"
+joined="$*"
+if [[ "$joined" == *"get hostname"* ]]; then
+    printf '%s\n' "gpu-01"
+    exit 0
+fi
+if [[ "${CMSH_FAIL:-}" == "close" && "$joined" == *"set status"* ]]; then
+    exit 1
+fi
+if [[ "${CMSH_FAIL:-}" == "wlm" && "$joined" == *"drain "* ]]; then
+    exit 1
+fi
+exit 0
+EOF
+chmod +x "$SIM/cmsh"
+cat >"$SIM/scontrol" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$SIM/scontrol"
+export CMSH_BIN="$SIM/cmsh" CMSH_LOG="$SIM/cmsh.log" PATH="$SIM:$PATH"
+: >"$CMSH_LOG"
+export CMSH_FAIL=close
+if bcm_drain_category gpu "weekly update-clean"; then
+    fail_case "drain succeeded when device close failed"
+else
+    pass "drain fails when device close fails"
+fi
+export CMSH_FAIL=wlm
+if bcm_drain_category gpu "weekly update-clean"; then
+    fail_case "drain succeeded when WLM drain failed"
+else
+    pass "drain fails when WLM drain failed"
+fi
+out=$(CMSH_FAIL=close bcm_maintenance_window gpu "weekly update-clean" start 2>&1 || true)
+printf '%s\n' "$out" | grep -q 'run fleet update next' \
+    && fail_case "maintenance start printed fleet instructions after drain failure" \
+    || pass "maintenance start withholds fleet instructions after drain failure"
+export CMSH_FAIL=
+if bcm_drain_category gpu "weekly update-clean"; then
+    pass "drain succeeds when close and WLM succeed"
+else
+    fail_case "drain succeeds when close and WLM succeed"
+fi
+
 printf '\n=== %s ===\n' "$([[ $fail -eq 0 ]] && echo 'bcm sanitizers passed' || echo 'bcm sanitizers failed')"
 exit "$fail"
